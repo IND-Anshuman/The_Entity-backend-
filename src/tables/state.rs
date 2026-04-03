@@ -3,11 +3,25 @@ use spacetimedb::{Identity, ScheduleAt, SpacetimeType, Timestamp};
 use crate::api::http_wrappers::{process_armoriq_request, process_gemini_validator_request};
 use crate::reducers::terminal::{_armoriq_callback, _gemini_validator_callback};
 
-/// The singleton game row used by the reducers in this scaffold.
+/// The singleton game row used by the non-room legacy reducers in this scaffold.
 pub const DEFAULT_GAME_ID: u64 = 1;
+
+/// Room-backed games start at a separate range so they never collide with the legacy default row.
+pub const ROOM_GAME_ID_OFFSET: u64 = 10_000;
 
 /// The singleton configuration row holding secrets and remote endpoint settings.
 pub const ACTIVE_SERVER_CONFIG_KEY: u8 = 1;
+
+/// The singleton row key storing which identity is allowed to run admin reducers.
+pub const MODULE_OWNER_KEY: u8 = 1;
+
+/// Public lifecycle state for a multiplayer room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SpacetimeType)]
+pub enum RoomStatus {
+    WaitingForPlayers,
+    Ready,
+    Terminated,
+}
 
 /// High-level lifecycle state for the terminal-validation loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, SpacetimeType)]
@@ -56,6 +70,54 @@ pub struct GameSecret {
     pub game_id: u64,
     pub hidden_answer: String,
     pub updated_at: Timestamp,
+}
+
+/// Sequence allocator used to mint unique room identifiers and room-scoped game ids.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(accessor = room_sequence, private)]
+pub struct RoomSequence {
+    #[primary_key]
+    #[auto_inc]
+    pub room_seq: u64,
+    pub created_at: Timestamp,
+}
+
+/// Public room metadata consumed by clients before they enter the actual game loop.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(accessor = game_room, public)]
+pub struct GameRoom {
+    #[primary_key]
+    pub room_id: String,
+    #[index(btree)]
+    pub game_id: u64,
+    pub host_identity: Identity,
+    pub player_one: Option<Identity>,
+    pub player_two: Option<Identity>,
+    pub status: RoomStatus,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    pub terminated_at: Option<Timestamp>,
+}
+
+/// Per-player room lifecycle receipt so clients can observe the latest room action they triggered.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(accessor = room_ticket, public)]
+pub struct RoomTicket {
+    #[primary_key]
+    pub owner_identity: Identity,
+    pub room_id: Option<String>,
+    pub room_status: Option<RoomStatus>,
+    pub updated_at: Timestamp,
+}
+
+/// Private owner record used to authorize operational/admin reducers.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(accessor = module_owner, private)]
+pub struct ModuleOwner {
+    #[primary_key]
+    pub owner_key: u8,
+    pub owner_identity: Identity,
+    pub created_at: Timestamp,
 }
 
 /// Server-owned configuration for external integrations.

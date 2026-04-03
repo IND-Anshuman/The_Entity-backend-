@@ -23,16 +23,13 @@ pub struct ArmorIqResponse {
     pub block_reason: Option<String>,
 }
 
-/// Exact structured JSON object expected from the clue-generation Gemini agent.
+/// Exact structured JSON object expected from the round 1 clue-generation Gemini agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GeminiClueGeneratorResponse {
-    pub game_title: String,
-    pub setting_summary: String,
-    pub shared_manual_intro: String,
-    pub round_1: RoundOnePackage,
-    pub round_2: RoundTwoPackage,
-    pub round_3: RoundThreePackage,
-    pub round_4_native_brief: NativeRoundBrief,
+pub struct GeminiRoundOneClueGeneratorResponse {
+    pub persona_name: String,
+    pub persona_paragraphs: Vec<String>,
+    pub target_word: String,
+    pub forbidden_words: Vec<String>,
 }
 
 /// Structured JSON object expected from the terminal-validation Gemini agent.
@@ -45,12 +42,19 @@ pub struct GeminiValidatorDecision {
 /// Local relay request contract for clue generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayClueGeneratorRequest {
-    pub setting: String,
-    pub difficulty: String,
-    pub villain_name: String,
-    pub objective: String,
+    pub round_key: String,
+    #[serde(default)]
+    pub requested_persona: Option<String>,
     #[serde(default)]
     pub theme: Option<String>,
+    #[serde(default)]
+    pub setting: Option<String>,
+    #[serde(default)]
+    pub difficulty: Option<String>,
+    #[serde(default)]
+    pub villain_name: Option<String>,
+    #[serde(default)]
+    pub objective: Option<String>,
 }
 
 /// Local relay request contract for terminal validation.

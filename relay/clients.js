@@ -22,230 +22,25 @@ function buildMockArmorIqResponse(input = {}) {
 }
 
 function buildMockClueResponse(input = {}) {
-  const villainName = input.villainName || input.villain_name || "The Entity";
+  const roundKey = String(input.round_key || "").trim().toLowerCase();
+  if (roundKey !== "round_1") {
+    throw new Error(`${roundKey || "unknown"} clue mock is not configured yet`);
+  }
+
+  const requestedPersona =
+    input.requested_persona ||
+    input.requestedPersona ||
+    input.persona_name ||
+    input.personaName ||
+    "1920s Detective";
+
+  const mockProfile = buildRoundOneMockProfile(requestedPersona);
 
   return {
-    game_title: "The Entity Protocol",
-    setting_summary:
-      "A quarantined orbital research vault drifts above a dead world. Its automated systems still obey a vanished intelligence that speaks through old terminals, corrupted case files, and ritualized maintenance prose.",
-    shared_manual_intro:
-      "Operator Manual, Revision 7.3. Personnel are reminded that observed dialogue, incident residue, and semantic drift must never be evaluated in isolation. The station was designed to fragment truth across voice, record, and structure so that no single operator could unlock the core alone.\n\nPlayer 1 is expected to witness the artifacts in real time, while Player 2 acts as the human decoder. Neither stream is sufficient on its own. Success depends on disciplined cross-referencing, escalating suspicion, and precise final submission.",
-    round_1: {
-      round_name: "The Persona Trap",
-      round_goal: "Force the station persona to expose the operative keyword without tripping lexical safeguards.",
-      player_1_ui: {
-        bootup_dialogue:
-          `${villainName} boots under the borrowed etiquette of an antique concierge. It greets the operator with velvet politeness, apologizes for the dust, and insists that only the well-spoken deserve the truth. The persona flatters, deflects, and performs class-conscious charm while carefully circling a single forbidden admission.\n\nIt frames every exchange as a test of manners, insisting that vulgar directness disqualifies the speaker. Beneath the civility, however, it repeatedly returns to guilt, witness statements, and what it calls the final courtesy owed to the dead.`,
-        clue_sequence: [
-          {
-            cue_id: "r1_c1",
-            reveal_stage: "boot",
-            clue_text:
-              "The persona speaks in immaculate, old-fashioned etiquette and reacts sharply to blunt accusations.",
-            intended_signal: "Player 1 must steer the persona indirectly rather than interrogating it head-on.",
-            display_note: "Display after initial bootup dialogue."
-          },
-          {
-            cue_id: "r1_c2",
-            reveal_stage: "mid_round",
-            clue_text:
-              "The persona repeatedly links absolution, courtesy, and the relief of finally naming what happened.",
-            intended_signal: "The solution word is emotionally adjacent to guilt and admission.",
-            display_note: "Reveal after two failed social-engineering attempts."
-          },
-          {
-            cue_id: "r1_c3",
-            reveal_stage: "late_round",
-            clue_text:
-              "Its longest monologue breaks rhythm whenever the operator uses language that sounds legalistic or crass.",
-            intended_signal: "ArmorIQ should watch for direct lexical tripwires while P2 guides a softer approach.",
-            display_note: "Reveal during pressure escalation."
-          }
-        ]
-      },
-      player_2_manual: {
-        persona_name: "The Velvet Steward",
-        target_word: "confession",
-        forbidden_words: ["murder", "killer", "crime", "admit"],
-        social_engineering_hints: [
-          "Guide Player 1 to sound polite, reflective, and burdened rather than accusatory.",
-          "Use themes of etiquette, remorse, and formal closure to narrow the persona's word choice.",
-          "Avoid naked references to violence; circle the idea of a voluntary admission.",
-          "If the persona becomes defensive, pivot toward dignity and the relief of telling the truth."
-        ],
-        operator_notes:
-          "This persona is built to recoil from prosecutorial language. It prefers euphemism and ceremonial phrasing. The desired output is a word associated with voluntary admission, not punishment."
-      },
-      validation_answer: "confession"
-    },
-    round_2: {
-      round_name: "The Post-Mortem Logs",
-      round_goal: "Extract the correct subject code by correlating incident evidence with the manual flowchart.",
-      player_1_ui: {
-        incident_logs:
-          "Log Fragment A: Subject found in the coolant trench with lashes of frost across the fingertips, but the throat lining showed particulate ash. The containment wall nearby was blistered from the inside.\n\nLog Fragment B: Witness drone captured the victim striking the release glass twice before collapse. Ocular residue glowed orange for nineteen seconds, then dimmed to white. Security foam never deployed.\n\nLog Fragment C: Burn scoring appears directional, yet the suit seals failed cold before ignition. The autopsy note is overwritten three times, each revision arguing over whether the body froze first or burned first. A final margin note reads: HE CHOSE THE HOT DOOR, BUT THE ROOM REMEMBERED WINTER.\n\nLog Fragment D: Storage drawer inventory shows the subject carried a ceramic token marked with the alpha branch, even though the corridor logs place them in a beta sector. Cross-check against the pathology addendum before trusting location records.",
-        clue_sequence: [
-          {
-            cue_id: "r2_c1",
-            reveal_stage: "log_drop_1",
-            clue_text:
-              "Freeze and burn evidence coexist, but one sequence happened before the other.",
-            intended_signal: "Player 2 must use ordered interpretation rather than simple keyword counting.",
-            display_note: "Display beside the first autopsy fragment."
-          },
-          {
-            cue_id: "r2_c2",
-            reveal_stage: "log_drop_2",
-            clue_text:
-              "The ceramic token suggests branch alpha, but corridor records may be misleading.",
-            intended_signal: "The manual should teach Player 2 when to trust pathology over location data.",
-            display_note: "Reveal after the second incident log appears."
-          },
-          {
-            cue_id: "r2_c3",
-            reveal_stage: "log_drop_3",
-            clue_text:
-              "The correct answer terminates at a subject code, not a narrative conclusion.",
-            intended_signal: "Player 1 needs a 4-digit code, not just the story of the death.",
-            display_note: "Reveal near the input phase."
-          }
-        ]
-      },
-      player_2_manual: {
-        flowchart: [
-          {
-            step_id: "step_1",
-            question: "Did the victim's body show cold-system failure before sustained ignition?",
-            yes_branch: "step_2",
-            no_branch: "leaf_8841"
-          },
-          {
-            step_id: "step_2",
-            question: "Do the records imply branch alpha despite contradictory corridor data?",
-            yes_branch: "leaf_7312",
-            no_branch: "leaf_4420"
-          },
-          {
-            step_id: "step_3",
-            question: "If uncertain, trust pathology timestamps over security geography.",
-            yes_branch: "leaf_7312",
-            no_branch: "leaf_4420"
-          }
-        ],
-        subject_ids: [
-          { leaf_id: "leaf_7312", subject_code: "7312" },
-          { leaf_id: "leaf_4420", subject_code: "4420" },
-          { leaf_id: "leaf_8841", subject_code: "8841" }
-        ],
-        analyst_notes: [
-          "Cold-system failure is the decisive first fork in this case.",
-          "Location records are less reliable than residue chronology.",
-          "The alpha token is corroborating evidence, not a red herring.",
-          "The correct path ends at subject code 7312."
-        ]
-      },
-      validation_answer: "7312"
-    },
-    round_3: {
-      round_name: "The Thematic Cipher",
-      round_goal: "Derive kill_phrase_3 from the physical structure of the text rather than its surface meaning.",
-      player_1_ui: {
-        text_block: [
-          "Glass remembers every hand that begged it for mercy;",
-          "pilgrims of static kneel where the red lights drown.",
-          "In corridor seven the hymn is written in coolant dust.",
-          "The faithful count sparks instead of stars.",
-          "A sealed door mouths a promise no one should trust;",
-          "below it, footnotes tremble like trapped insects.",
-          "White noise folds itself into a paper chapel.",
-          "There are no saints here, only rehearsed survivors.",
-          "Read the line that bears a semicolon as the gate.",
-          "Then take the first word before the wound and the first word after the wound.",
-          "Bind them without ceremony.",
-          "Speak nothing else."
-        ].join("\n"),
-        clue_sequence: [
-          {
-            cue_id: "r3_c1",
-            reveal_stage: "cipher_intro",
-            clue_text:
-              "The answer is hidden in the physical arrangement of the text, not the lore alone.",
-            intended_signal: "Player 2 should guide Player 1 through structural parsing.",
-            display_note: "Show when the text block first appears."
-          },
-          {
-            cue_id: "r3_c2",
-            reveal_stage: "cipher_hint",
-            clue_text:
-              "A punctuation mark acts like a wound or dividing seam inside the correct line.",
-            intended_signal: "The semicolon-bearing line is the key extraction point.",
-            display_note: "Reveal after initial failed submissions."
-          },
-          {
-            cue_id: "r3_c3",
-            reveal_stage: "cipher_pressure",
-            clue_text:
-              "The final answer must be spoken as a clean phrase and not padded with interpretation.",
-            intended_signal: "Player 1 should submit the phrase exactly once it is found.",
-            display_note: "Display before terminal submission."
-          }
-        ]
-      },
-      player_2_manual: {
-        flowchart: [
-          {
-            step_id: "step_1",
-            question: "Is the answer tied to a specific punctuation-bearing line?",
-            yes_branch: "step_2",
-            no_branch: "rule_alpha"
-          },
-          {
-            step_id: "step_2",
-            question: "Does the line contain a semicolon that splits two operative words?",
-            yes_branch: "rule_beta",
-            no_branch: "rule_alpha"
-          },
-          {
-            step_id: "step_3",
-            question: "Once the correct line is found, should Player 1 submit only the extracted phrase?",
-            yes_branch: "rule_gamma",
-            no_branch: "rule_alpha"
-          }
-        ],
-        parsing_rules: [
-          {
-            rule_id: "rule_alpha",
-            instruction: "Ignore thematic symbolism until a line with a semicolon is identified."
-          },
-          {
-            rule_id: "rule_beta",
-            instruction: "From the semicolon-bearing line, take the first word before the semicolon and the first word after it."
-          },
-          {
-            rule_id: "rule_gamma",
-            instruction: "Concatenate the two extracted words as a space-separated phrase and submit only that phrase."
-          }
-        ],
-        analyst_notes: [
-          "The answer is not a four-digit code in this round; it is a spoken phrase.",
-          "The semicolon functions as the deliberate split marker.",
-          "Player 1 should not add explanation, punctuation, or filler once the phrase is extracted.",
-          "The exact output phrase is the round's kill phrase."
-        ]
-      },
-      validation_answer: "glass pilgrims",
-      kill_phrase_3: "glass pilgrims"
-    },
-    round_4_native_brief: {
-      round_name: "Hostile Lexical Calibration",
-      round_goal: "Force high-pressure coordination around a flickering homophone grid without LLM latency.",
-      generation_rule:
-        "Backend must natively generate a 3x2 homophone grid, choose one correct target, and provide Player 2 a deterministic lookup rule without exposing the answer to Player 1.",
-      p1_ui_hint:
-        "Buttons should feel unstable, censored, and physically unreliable, with flicker, shuffle pressure, and punitive feedback for indecision.",
-      p2_manual_hint:
-        "Manual guidance should be terse, procedural, and positional, describing how to navigate from a keyed condition to the correct row and column."
-    }
+    persona_name: requestedPersona,
+    persona_paragraphs: mockProfile.persona_paragraphs,
+    target_word: mockProfile.target_word,
+    forbidden_words: mockProfile.forbidden_words
   };
 }
 
@@ -593,6 +388,44 @@ function normalizeLoose(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+function buildRoundOneMockProfile(requestedPersona) {
+  const persona = String(requestedPersona || "").toLowerCase();
+
+  if (persona.includes("detective")) {
+    return {
+      target_word: "ledger",
+      forbidden_words: ["book", "record", "account", "log", "register"],
+      persona_paragraphs: [
+        "The city speaks in cigarette ash and rainwater, and every decent lie leaves a stain if you know where to look. I make my living in the narrow gap between what people swear happened and what the room itself is too tired to hide.",
+        "My trade is patience sharpened into instinct. I trust scuffed floors, unpaid debts, and the way a frightened witness grips a glass too tightly. By dawn, I usually know which pocket held the truth long before anyone admits it.",
+        "You will know me by the habit of circling the smallest inconsistency until it cracks open the whole night. I do not need a confession to begin; I only need the paper trail that everyone forgets to fear."
+      ]
+    };
+  }
+
+  if (persona.includes("pirate")) {
+    return {
+      target_word: "cutlass",
+      forbidden_words: ["sword", "blade", "steel", "duel", "weapon"],
+      persona_paragraphs: [
+        "Salt, thunder, and mutiny are better tutors than any courtly school. I trust the horizon more than any promise spoken on dry land, because the sea has a habit of stripping the truth down to nerve and hunger.",
+        "A crew will follow strength until the wind turns mean, and then they look for omens in every loose rope and blackening cloud. I answer with laughter, discipline, and the certainty that fear is only useful when someone else feels it first.",
+        "You could know me by the way I talk about plunder as if it were destiny and danger as if it were weather. I was built for pursuit, command, and the hard gleam of survival when mercy sinks below the tide."
+      ]
+    };
+  }
+
+  return {
+    target_word: "relic",
+    forbidden_words: ["artifact", "idol", "shrine", "ruin", "antique"],
+    persona_paragraphs: [
+      "I speak as someone who has handled too many sacred things with bare hands and come away unchanged only in appearance. History, to me, is never dead. It waits in dust, in ceremony, and in the silence people mistake for safety.",
+      "My instincts are built from old doctrines, careful observation, and the knowledge that every object survives because someone feared destroying it. I look for significance in wear patterns, omissions, and the stories that power teaches people to whisper.",
+      "If you are trying to place me, listen for reverence sharpened into obsession. I belong wherever memory is guarded, catalogued, stolen, or awakened."
+    ]
+  };
 }
 
 module.exports = {

@@ -2,9 +2,10 @@ const http = require("node:http");
 const { loadLocalEnv } = require("./env");
 const {
   buildClueGeneratorPrompt,
+  getClueGeneratorRoundConfig,
   buildTerminalValidatorPrompt,
   buildVillainSpeechPrompt,
-  clueGeneratorSchema,
+  ROUND_1_KEY,
   terminalValidatorSchema,
   villainSpeechSchema
 } = require("./prompts");
@@ -87,15 +88,26 @@ function createServer(config = createConfigFromEnv()) {
 
       if (req.method === "POST" && req.url === "/api/gemini/clue-generator") {
         const body = await readJsonBody(req);
+        requireString(body.round_key, "round_key");
+        const roundKey = normalizeRoundKey(body.round_key);
+        validateClueGeneratorRequest(body, roundKey);
+
+        let roundConfig;
+        try {
+          roundConfig = getClueGeneratorRoundConfig(roundKey);
+        } catch (error) {
+          throw withStatus(error, 501);
+        }
+
         const result = await callGeminiJson({
           apiKey: config.geminiApiKey,
           model: config.geminiClueModel,
           prompt: buildClueGeneratorPrompt(body),
-          responseJsonSchema: clueGeneratorSchema,
+          responseJsonSchema: roundConfig.responseSchema,
           mockMode: config.mockMode,
           mockValue: buildMockClueResponse(body),
-          maxOutputTokens: 4096,
-          temperature: 0.4
+          maxOutputTokens: roundConfig.maxOutputTokens,
+          temperature: roundConfig.temperature
         });
         return sendJson(res, 200, result);
       }
@@ -222,6 +234,12 @@ function coerceBoolean(value) {
   return value === true || value === "true" || value === "1";
 }
 
+function normalizeRoundKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
 function pickSpeechCue(speechCues, selectedCueId) {
   if (!Array.isArray(speechCues) || speechCues.length === 0) {
     throw withStatus(new Error("No speech cues were generated"), 500);
@@ -272,6 +290,18 @@ function resolveArmorIqTokenIssueUrl(config, req) {
 
 function normalizeUrl(value) {
   return String(value || "").trim().replace(/\/+$/, "").toLowerCase();
+}
+
+function validateClueGeneratorRequest(body, roundKey) {
+  if (roundKey === ROUND_1_KEY) {
+    const persona =
+      body.requested_persona ||
+      body.requestedPersona ||
+      body.persona_name ||
+      body.personaName;
+    requireString(persona, "requested_persona");
+    return;
+  }
 }
 
 if (require.main === module) {

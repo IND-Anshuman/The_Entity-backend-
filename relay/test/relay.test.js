@@ -80,21 +80,34 @@ test("clue generator endpoint returns the required JSON contract", async () => {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      setting: "a derelict orbital lab",
-      difficulty: "hard",
-      villainName: "The Entity",
-      theme: "industrial cosmic horror"
+      round_key: "round_1",
+      requested_persona: "1920s Detective"
     })
   });
 
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(typeof body.game_title, "string");
-  assert.equal(typeof body.shared_manual_intro, "string");
-  assert.equal(typeof body.round_1.player_1_ui.bootup_dialogue, "string");
-  assert.ok(Array.isArray(body.round_1.player_1_ui.clue_sequence));
-  assert.ok(Array.isArray(body.round_2.player_2_manual.flowchart));
-  assert.equal(body.round_3.kill_phrase_3, body.round_3.validation_answer);
+  assert.equal(body.persona_name, "1920s Detective");
+  assert.ok(Array.isArray(body.persona_paragraphs));
+  assert.ok(body.persona_paragraphs.length >= 2);
+  assert.ok(body.persona_paragraphs.length <= 3);
+  assert.equal(typeof body.target_word, "string");
+  assert.ok(Array.isArray(body.forbidden_words));
+  assert.equal(body.forbidden_words.length, 5);
+});
+
+test("clue generator returns not implemented for later rounds until configured", async () => {
+  const response = await fetch(`${baseUrl}/api/gemini/clue-generator`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      round_key: "round_2"
+    })
+  });
+
+  assert.equal(response.status, 501);
+  const body = await response.json();
+  assert.match(body.error, /round_2/i);
 });
 
 test("terminal validator endpoint accepts matching input in mock mode", async () => {

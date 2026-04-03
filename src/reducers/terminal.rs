@@ -2,12 +2,32 @@ use spacetimedb::{log, Identity, ReducerContext, Table};
 
 use crate::api::http_wrappers::{extract_gemini_text, queue_gemini_validator, verify_with_armoriq};
 use crate::models::api_schemas::{ArmorIqResponse, GeminiValidatorDecision};
+use crate::reducers::room::resolve_room_game_id;
 use crate::tables::state::{
     armoriq_callback_schedule, game_secret, game_state, gemini_validator_callback_schedule,
-    server_config, terminal_request, ArmoriqCallbackSchedule, GameSecret, GameState,
-    GeminiValidatorCallbackSchedule, ServerConfig, TerminalRequest, TerminalRequestPhase,
-    TerminalStatus, ACTIVE_SERVER_CONFIG_KEY, DEFAULT_GAME_ID,
+    module_owner, server_config, terminal_request, ArmoriqCallbackSchedule, GameSecret,
+    GameState, GeminiValidatorCallbackSchedule, ModuleOwner, ServerConfig, TerminalRequest,
+    TerminalRequestPhase, TerminalStatus, ACTIVE_SERVER_CONFIG_KEY, DEFAULT_GAME_ID,
+    MODULE_OWNER_KEY,
 };
+
+/// Captures the module owner identity on first publish (or clear) for admin authorization.
+#[spacetimedb::reducer(init)]
+pub fn init(ctx: &ReducerContext) {
+    if ctx
+        .db
+        .module_owner()
+        .owner_key()
+        .find(MODULE_OWNER_KEY)
+        .is_none()
+    {
+        ctx.db.module_owner().insert(ModuleOwner {
+            owner_key: MODULE_OWNER_KEY,
+            owner_identity: ctx.sender(),
+            created_at: ctx.timestamp,
+        });
+    }
+}
 
 /// Trigger reducer for Player 1 terminal submissions.
 ///
@@ -15,12 +35,38 @@ use crate::tables::state::{
 /// performs network I/O directly, which keeps the transaction deterministic and replay-safe.
 #[spacetimedb::reducer]
 pub fn submit_terminal(ctx: &ReducerContext, input: String) -> Result<(), String> {
+    submit_terminal_for_game(ctx, DEFAULT_GAME_ID, input, true)
+}
+
+/// Room-scoped trigger reducer for Player 1 terminal submissions.
+///
+/// Android clients should use this reducer so each room stays fully isolated.
+#[spacetimedb::reducer]
+pub fn submit_terminal_for_room(
+    ctx: &ReducerContext,
+    room_id: String,
+    input: String,
+) -> Result<(), String> {
+    let game_id = resolve_room_game_id(ctx, room_id.trim())?;
+    submit_terminal_for_game(ctx, game_id, input, false)
+}
+
+fn submit_terminal_for_game(
+    ctx: &ReducerContext,
+    game_id: u64,
+    input: String,
+    allow_legacy_create: bool,
+) -> Result<(), String> {
     let normalized_input = input.trim().to_string();
     if normalized_input.is_empty() {
         return Err("terminal input must not be empty".to_string());
     }
 
-    let mut game_state = load_or_create_game_state(ctx);
+    let mut game_state = if allow_legacy_create {
+        load_or_create_game_state(ctx)
+    } else {
+        load_game_state(ctx, game_id)?
+    };
     bind_or_authorize_player_one(ctx.sender(), &mut game_state)?;
     repair_stale_lock_if_needed(ctx, &mut game_state);
 
@@ -74,12 +120,33 @@ pub fn submit_terminal(ctx: &ReducerContext, input: String) -> Result<(), String
 /// Stores or updates the hidden terminal answer for the default game session.
 #[spacetimedb::reducer]
 pub fn set_hidden_answer(ctx: &ReducerContext, hidden_answer: String) -> Result<(), String> {
+    ensure_module_owner(ctx)?;
+
     let normalized = hidden_answer.trim().to_string();
     if normalized.is_empty() {
         return Err("hidden_answer must not be empty".to_string());
     }
 
-    upsert_hidden_answer(ctx, normalized);
+    upsert_hidden_answer_for_game(ctx, DEFAULT_GAME_ID, normalized);
+    Ok(())
+}
+
+/// Stores or updates the hidden answer for a specific room-backed game.
+#[spacetimedb::reducer]
+pub fn set_hidden_answer_for_room(
+    ctx: &ReducerContext,
+    room_id: String,
+    hidden_answer: String,
+) -> Result<(), String> {
+    ensure_module_owner(ctx)?;
+
+    let normalized = hidden_answer.trim().to_string();
+    if normalized.is_empty() {
+        return Err("hidden_answer must not be empty".to_string());
+    }
+
+    let game_id = resolve_room_game_id(ctx, room_id.trim())?;
+    upsert_hidden_answer_for_game(ctx, game_id, normalized);
     Ok(())
 }
 
@@ -98,6 +165,8 @@ pub fn configure_integrations(
     gemini_clue_generator_model: String,
     gemini_villain_model: String,
 ) -> Result<(), String> {
+    ensure_module_owner(ctx)?;
+
     let verify_url = require_trimmed("armoriq_verify_url", armoriq_verify_url)?;
     let api_key_header = require_trimmed("armoriq_api_key_header", armoriq_api_key_header)?;
     let api_key = require_trimmed("armoriq_api_key", armoriq_api_key)?;
@@ -143,6 +212,8 @@ pub fn configure_local_dev_integrations(
     relay_base_url: String,
     armoriq_api_key: String,
 ) -> Result<(), String> {
+    ensure_module_owner(ctx)?;
+
     let relay_base = require_trimmed("relay_base_url", relay_base_url)?;
     let api_key = normalize_dev_api_key(armoriq_api_key);
 
@@ -486,6 +557,14 @@ fn load_or_create_game_state(ctx: &ReducerContext) -> GameState {
     })
 }
 
+fn load_game_state(ctx: &ReducerContext, game_id: u64) -> Result<GameState, String> {
+    ctx.db
+        .game_state()
+        .game_id()
+        .find(game_id)
+        .ok_or_else(|| format!("game state {} does not exist", game_id))
+}
+
 fn bind_or_authorize_player_one(sender: Identity, state: &mut GameState) -> Result<(), String> {
     match state.player_one {
         Some(existing) if existing != sender => {
@@ -555,17 +634,17 @@ fn clear_state_for_unknown_request(ctx: &ReducerContext, request_id: u64, messag
 
 #[allow(dead_code)]
 fn _store_hidden_answer(ctx: &ReducerContext, hidden_answer: String) {
-    upsert_hidden_answer(ctx, hidden_answer);
+    upsert_hidden_answer_for_game(ctx, DEFAULT_GAME_ID, hidden_answer);
 }
 
-fn upsert_hidden_answer(ctx: &ReducerContext, hidden_answer: String) {
+fn upsert_hidden_answer_for_game(ctx: &ReducerContext, game_id: u64, hidden_answer: String) {
     let row = GameSecret {
-        game_id: DEFAULT_GAME_ID,
+        game_id,
         hidden_answer,
         updated_at: ctx.timestamp,
     };
 
-    if ctx.db.game_secret().game_id().find(DEFAULT_GAME_ID).is_some() {
+    if ctx.db.game_secret().game_id().find(game_id).is_some() {
         ctx.db.game_secret().game_id().update(row);
     } else {
         ctx.db.game_secret().insert(row);
@@ -584,6 +663,24 @@ fn upsert_server_config(ctx: &ReducerContext, config: ServerConfig) {
     } else {
         ctx.db.server_config().insert(config);
     }
+}
+
+fn ensure_module_owner(ctx: &ReducerContext) -> Result<(), String> {
+    let owner = ctx
+        .db
+        .module_owner()
+        .owner_key()
+        .find(MODULE_OWNER_KEY)
+        .ok_or_else(|| {
+            "module owner is not initialized; republish with clear to run init reducer"
+                .to_string()
+        })?;
+
+    if owner.owner_identity != ctx.sender() {
+        return Err("only the module owner may call this reducer".to_string());
+    }
+
+    Ok(())
 }
 
 fn require_trimmed(label: &str, value: String) -> Result<String, String> {
