@@ -17,6 +17,10 @@ test.before(async () => {
 });
 
 test.after(async () => {
+  if (!serverHandle?.server) {
+    return;
+  }
+
   await new Promise((resolve, reject) => {
     serverHandle.server.close((error) => (error ? reject(error) : resolve()));
   });
@@ -39,15 +43,19 @@ test("clue generator endpoint returns the required JSON contract", async () => {
     body: JSON.stringify({
       setting: "a derelict orbital lab",
       difficulty: "hard",
-      villainName: "The Entity"
+      villainName: "The Entity",
+      theme: "industrial cosmic horror"
     })
   });
 
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(typeof body.villain_clue_dialogue, "string");
-  assert.equal(typeof body.p2_manual_snippet, "string");
-  assert.equal(typeof body.hidden_answer, "string");
+  assert.equal(typeof body.game_title, "string");
+  assert.equal(typeof body.shared_manual_intro, "string");
+  assert.equal(typeof body.round_1.player_1_ui.bootup_dialogue, "string");
+  assert.ok(Array.isArray(body.round_1.player_1_ui.clue_sequence));
+  assert.ok(Array.isArray(body.round_2.player_2_manual.flowchart));
+  assert.equal(body.round_3.kill_phrase_3, body.round_3.validation_answer);
 });
 
 test("terminal validator endpoint accepts matching input in mock mode", async () => {
@@ -71,13 +79,16 @@ test("villain speech endpoint returns text plus synthesized audio payload", asyn
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       villainName: "The Entity",
-      scene: "the players have almost solved the puzzle"
+      scene: "the players have almost solved the puzzle",
+      selected_cue_id: "v_r2_c1"
     })
   });
 
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(typeof body.speech_text, "string");
+  assert.ok(Array.isArray(body.speech_cues));
+  assert.ok(body.speech_cues.length >= 3);
+  assert.equal(body.selected_cue_id, "v_r2_c1");
   assert.equal(body.tts_provider, "mock");
   assert.equal(typeof body.audio_base64, "string");
 });

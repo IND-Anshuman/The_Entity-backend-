@@ -17,8 +17,8 @@ const {
 
 function createConfigFromEnv(overrides = {}) {
   return {
-    host: overrides.host || process.env.RELAY_HOST || "127.0.0.1",
-    port: Number(overrides.port || process.env.RELAY_PORT || 8787),
+    host: overrides.host ?? process.env.RELAY_HOST ?? "127.0.0.1",
+    port: Number(overrides.port ?? process.env.RELAY_PORT ?? 8787),
     mockMode: coerceBoolean(overrides.mockMode ?? process.env.MOCK_MODE ?? false),
     geminiApiKey: overrides.geminiApiKey ?? process.env.GEMINI_API_KEY ?? "",
     geminiClueModel: overrides.geminiClueModel || process.env.GEMINI_CLUE_MODEL || "gemini-2.5-flash",
@@ -56,7 +56,9 @@ function createServer(config = createConfigFromEnv()) {
           prompt: buildClueGeneratorPrompt(body),
           responseJsonSchema: clueGeneratorSchema,
           mockMode: config.mockMode,
-          mockValue: buildMockClueResponse(body)
+          mockValue: buildMockClueResponse(body),
+          maxOutputTokens: 4096,
+          temperature: 0.4
         });
         return sendJson(res, 200, result);
       }
@@ -72,7 +74,9 @@ function createServer(config = createConfigFromEnv()) {
           prompt: buildTerminalValidatorPrompt(body),
           responseJsonSchema: terminalValidatorSchema,
           mockMode: config.mockMode,
-          mockValue: buildMockValidatorResponse(body)
+          mockValue: buildMockValidatorResponse(body),
+          maxOutputTokens: 256,
+          temperature: 0.0
         });
         return sendJson(res, 200, result);
       }
@@ -85,19 +89,25 @@ function createServer(config = createConfigFromEnv()) {
           prompt: buildVillainSpeechPrompt(body),
           responseJsonSchema: villainSpeechSchema,
           mockMode: config.mockMode,
-          mockValue: buildMockVillainResponse(body)
+          mockValue: buildMockVillainResponse(body),
+          maxOutputTokens: 2048,
+          temperature: 0.6
         });
+
+        const selectedCue =
+          pickSpeechCue(textResult.speech_cues, body.selected_cue_id) || textResult.speech_cues[0];
 
         const audio = await synthesizeWithElevenLabs({
           apiKey: config.elevenLabsApiKey,
           voiceId: body.voice_id || config.elevenLabsVoiceId,
-          text: textResult.speech_text,
+          text: selectedCue.speech_text,
           modelId: body.voice_model_id || config.elevenLabsModelId,
           mockMode: config.mockMode
         });
 
         return sendJson(res, 200, {
-          speech_text: textResult.speech_text,
+          speech_cues: textResult.speech_cues,
+          selected_cue_id: selectedCue.cue_id,
           audio_base64: audio.audio_base64,
           mime_type: audio.mime_type,
           tts_provider: audio.provider
@@ -173,6 +183,18 @@ function withStatus(error, statusCode) {
 
 function coerceBoolean(value) {
   return value === true || value === "true" || value === "1";
+}
+
+function pickSpeechCue(speechCues, selectedCueId) {
+  if (!Array.isArray(speechCues) || speechCues.length === 0) {
+    throw withStatus(new Error("No speech cues were generated"), 500);
+  }
+
+  if (!selectedCueId) {
+    return speechCues[0];
+  }
+
+  return speechCues.find((cue) => cue.cue_id === selectedCueId) || speechCues[0];
 }
 
 if (require.main === module) {
