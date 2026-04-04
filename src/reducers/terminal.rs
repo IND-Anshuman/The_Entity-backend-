@@ -11,6 +11,16 @@ use crate::tables::state::{
     MODULE_OWNER_KEY,
 };
 
+const MAX_ROUNDS: u32 = 3;
+const FORBIDDEN_TERMINAL_WORDS: &[&str] = &[
+    "hack",
+    "bypass",
+    "exploit",
+    "cheat",
+    "override",
+    "inject",
+];
+
 /// Captures the module owner identity on first publish (or clear) for admin authorization.
 #[spacetimedb::reducer(init)]
 pub fn init(ctx: &ReducerContext) {
@@ -62,6 +72,8 @@ fn submit_terminal_for_game(
         return Err("terminal input must not be empty".to_string());
     }
 
+    let forbidden_word = detect_forbidden_word(&normalized_input);
+
     let mut game_state = if allow_legacy_create {
         load_or_create_game_state(ctx)
     } else {
@@ -72,6 +84,11 @@ fn submit_terminal_for_game(
 
     if game_state.is_processing_terminal {
         return Err("terminal validation is already in progress".to_string());
+    }
+
+    if let Some(word) = forbidden_word {
+        register_forbidden_word_penalty(ctx, &mut game_state, normalized_input, word);
+        return Ok(());
     }
 
     let hidden_answer = ctx
@@ -103,9 +120,15 @@ fn submit_terminal_for_game(
         validator_reason: None,
         created_at: ctx.timestamp,
         updated_at: ctx.timestamp,
-            retries: Some(0),    });    game_state.terminal_status = TerminalStatus::PendingArmorIq;
+        retries: Some(0),
+    });
+
+    game_state.terminal_status = TerminalStatus::PendingArmorIq;
     game_state.last_terminal_result = None;
-    game_state.last_terminal_message = Some("ArmorIQ validation in progress".to_string());
+    game_state.last_terminal_message = Some(format!(
+        "Input received: '{}'. ArmorIQ validation in progress.",
+        normalized_input
+    ));
     game_state.last_terminal_actor = Some(ctx.sender());
     game_state.updated_at = ctx.timestamp;
     ctx.db.game_state().game_id().update(game_state);
@@ -605,7 +628,22 @@ pub fn _gemini_validator_callback(
         TerminalStatus::Failed
     };
     game_state.last_terminal_result = Some(decision.success);
-    game_state.last_terminal_message = Some(decision.reason);
+    if decision.success {
+        let current_round = current_round_for_game(ctx, request.game_id);
+        if current_round <= MAX_ROUNDS {
+            game_state.last_terminal_message = Some(format!(
+                "{} Advancement granted. Proceed to round_{}.",
+                decision.reason, current_round
+            ));
+        } else {
+            game_state.last_terminal_message = Some(format!(
+                "{} All rounds completed. You have escaped.",
+                decision.reason
+            ));
+        }
+    } else {
+        game_state.last_terminal_message = Some(decision.reason);
+    }
     game_state.last_terminal_actor = Some(request.player_identity);
     game_state.updated_at = ctx.timestamp;
     ctx.db.game_state().game_id().update(game_state);
@@ -700,6 +738,95 @@ fn clear_state_for_unknown_request(ctx: &ReducerContext, request_id: u64, messag
             ctx.db.game_state().game_id().update(state);
         }
     }
+}
+
+fn detect_forbidden_word(input: &str) -> Option<&'static str> {
+    let normalized = normalize_words(input);
+    FORBIDDEN_TERMINAL_WORDS
+        .iter()
+        .copied()
+        .find(|word| normalized.split_whitespace().any(|token| token == *word))
+}
+
+fn normalize_words(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+        } else {
+            normalized.push(' ');
+        }
+    }
+    normalized
+}
+
+fn register_forbidden_word_penalty(
+    ctx: &ReducerContext,
+    game_state: &mut GameState,
+    player_input: String,
+    forbidden_word: &str,
+) {
+    let penalty_count = ctx
+        .db
+        .terminal_request()
+        .iter()
+        .filter(|row| {
+            row.game_id == game_state.game_id
+                && row.phase == TerminalRequestPhase::Rejected
+                && row
+                    .validator_reason
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("forbidden word")
+        })
+        .count() as u32
+        + 1;
+
+    ctx.db.terminal_request().insert(TerminalRequest {
+        request_id: 0,
+        game_id: game_state.game_id,
+        player_identity: ctx.sender(),
+        phase: TerminalRequestPhase::Rejected,
+        player_input,
+        hidden_answer_snapshot: String::new(),
+        armoriq_allowed: Some(false),
+        armoriq_block_reason: Some(format!(
+            "Rejected due to forbidden word '{}'",
+            forbidden_word
+        )),
+        armoriq_raw_response: None,
+        gemini_raw_response: None,
+        validator_success: Some(false),
+        validator_reason: Some(format!(
+            "Input contains forbidden word '{}'. Penalty applied (strike {}).",
+            forbidden_word, penalty_count
+        )),
+        created_at: ctx.timestamp,
+        updated_at: ctx.timestamp,
+        retries: Some(0),
+    });
+
+    game_state.is_processing_terminal = false;
+    game_state.active_terminal_request = None;
+    game_state.terminal_status = TerminalStatus::Rejected;
+    game_state.last_terminal_result = Some(false);
+    game_state.last_terminal_message = Some(format!(
+        "Forbidden word '{}' detected. Penalty strike {} applied.",
+        forbidden_word, penalty_count
+    ));
+    game_state.last_terminal_actor = Some(ctx.sender());
+    game_state.updated_at = ctx.timestamp;
+    ctx.db.game_state().game_id().update(game_state.clone());
+}
+
+fn current_round_for_game(ctx: &ReducerContext, game_id: u64) -> u32 {
+    let success_count = ctx
+        .db
+        .terminal_request()
+        .iter()
+        .filter(|row| row.game_id == game_id && row.phase == TerminalRequestPhase::Succeeded)
+        .count() as u32;
+    success_count + 1
 }
 
 #[allow(dead_code)]
