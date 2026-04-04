@@ -5,8 +5,8 @@ use crate::models::api_schemas::{ArmorIqResponse, GeminiValidatorDecision};
 use crate::reducers::room::resolve_room_game_id;
 use crate::tables::state::{
     armoriq_callback_schedule, game_secret, game_state, gemini_validator_callback_schedule,
-    module_owner, server_config, terminal_request, ArmoriqCallbackSchedule, GameSecret,
-    GameState, GeminiValidatorCallbackSchedule, ModuleOwner, ServerConfig, TerminalRequest,
+    module_owner, server_config, terminal_request, ArmoriqCallbackSchedule, GameSecret, GameState,
+    GeminiValidatorCallbackSchedule, ModuleOwner, ServerConfig, TerminalRequest,
     TerminalRequestPhase, TerminalStatus, ACTIVE_SERVER_CONFIG_KEY, DEFAULT_GAME_ID,
     MODULE_OWNER_KEY,
 };
@@ -251,7 +251,12 @@ pub fn _armoriq_callback(
         .scheduled_id()
         .delete(&callback.scheduled_id);
 
-    let Some(mut request) = ctx.db.terminal_request().request_id().find(callback.request_id) else {
+    let Some(mut request) = ctx
+        .db
+        .terminal_request()
+        .request_id()
+        .find(callback.request_id)
+    else {
         clear_state_for_unknown_request(
             ctx,
             callback.request_id,
@@ -277,7 +282,10 @@ pub fn _armoriq_callback(
         request.validator_success = Some(false);
         request.validator_reason = Some(transport_error.clone());
         request.updated_at = ctx.timestamp;
-        ctx.db.terminal_request().request_id().update(request.clone());
+        ctx.db
+            .terminal_request()
+            .request_id()
+            .update(request.clone());
 
         fail_game_state(
             ctx,
@@ -303,7 +311,10 @@ pub fn _armoriq_callback(
             callback.status_code
         ));
         request.updated_at = ctx.timestamp;
-        ctx.db.terminal_request().request_id().update(request.clone());
+        ctx.db
+            .terminal_request()
+            .request_id()
+            .update(request.clone());
 
         fail_game_state(
             ctx,
@@ -327,7 +338,10 @@ pub fn _armoriq_callback(
             request.validator_success = Some(false);
             request.validator_reason = Some(format!("Invalid ArmorIQ JSON: {err}"));
             request.updated_at = ctx.timestamp;
-            ctx.db.terminal_request().request_id().update(request.clone());
+            ctx.db
+                .terminal_request()
+                .request_id()
+                .update(request.clone());
 
             fail_game_state(
                 ctx,
@@ -356,7 +370,10 @@ pub fn _armoriq_callback(
                 .clone()
                 .unwrap_or_else(|| "ArmorIQ blocked the terminal request".to_string()),
         );
-        ctx.db.terminal_request().request_id().update(request.clone());
+        ctx.db
+            .terminal_request()
+            .request_id()
+            .update(request.clone());
 
         fail_game_state(
             ctx,
@@ -373,7 +390,10 @@ pub fn _armoriq_callback(
     }
 
     request.phase = TerminalRequestPhase::PendingGeminiValidator;
-    ctx.db.terminal_request().request_id().update(request.clone());
+    ctx.db
+        .terminal_request()
+        .request_id()
+        .update(request.clone());
 
     game_state.is_processing_terminal = true;
     game_state.active_terminal_request = Some(request.request_id);
@@ -385,12 +405,20 @@ pub fn _armoriq_callback(
     ctx.db.game_state().game_id().update(game_state.clone());
 
     if let Err(err) = queue_gemini_validator(ctx, request.request_id) {
-        if let Some(mut latest_request) = ctx.db.terminal_request().request_id().find(request.request_id) {
+        if let Some(mut latest_request) = ctx
+            .db
+            .terminal_request()
+            .request_id()
+            .find(request.request_id)
+        {
             latest_request.phase = TerminalRequestPhase::Failed;
             latest_request.validator_success = Some(false);
             latest_request.validator_reason = Some(err.clone());
             latest_request.updated_at = ctx.timestamp;
-            ctx.db.terminal_request().request_id().update(latest_request);
+            ctx.db
+                .terminal_request()
+                .request_id()
+                .update(latest_request);
         }
 
         fail_game_state(
@@ -422,7 +450,12 @@ pub fn _gemini_validator_callback(
         .scheduled_id()
         .delete(&callback.scheduled_id);
 
-    let Some(mut request) = ctx.db.terminal_request().request_id().find(callback.request_id) else {
+    let Some(mut request) = ctx
+        .db
+        .terminal_request()
+        .request_id()
+        .find(callback.request_id)
+    else {
         clear_state_for_unknown_request(
             ctx,
             callback.request_id,
@@ -446,7 +479,10 @@ pub fn _gemini_validator_callback(
         request.validator_success = Some(false);
         request.validator_reason = Some(transport_error.clone());
         request.updated_at = ctx.timestamp;
-        ctx.db.terminal_request().request_id().update(request.clone());
+        ctx.db
+            .terminal_request()
+            .request_id()
+            .update(request.clone());
 
         fail_game_state(
             ctx,
@@ -464,10 +500,15 @@ pub fn _gemini_validator_callback(
         request.gemini_raw_response = Some(callback.response_body.clone());
         request.phase = TerminalRequestPhase::Failed;
         request.validator_success = Some(false);
-        request.validator_reason =
-            Some(format!("Gemini returned non-200 status {}", callback.status_code));
+        request.validator_reason = Some(format!(
+            "Gemini returned non-200 status {}",
+            callback.status_code
+        ));
         request.updated_at = ctx.timestamp;
-        ctx.db.terminal_request().request_id().update(request.clone());
+        ctx.db
+            .terminal_request()
+            .request_id()
+            .update(request.clone());
 
         fail_game_state(
             ctx,
@@ -481,32 +522,35 @@ pub fn _gemini_validator_callback(
         return Ok(());
     }
 
-    let decision: GeminiValidatorDecision =
-        match serde_json::from_str(&callback.response_body).or_else(|_| {
+    let decision: GeminiValidatorDecision = match serde_json::from_str(&callback.response_body)
+        .or_else(|_| {
             extract_gemini_text(&callback.response_body)
                 .and_then(|text| serde_json::from_str(&text).map_err(|err| err.to_string()))
         }) {
-            Ok(value) => value,
-            Err(err) => {
-                request.gemini_raw_response = Some(callback.response_body.clone());
-                request.phase = TerminalRequestPhase::Failed;
-                request.validator_success = Some(false);
-                request.validator_reason = Some(format!("Invalid Gemini decision JSON: {err}"));
-                request.updated_at = ctx.timestamp;
-                ctx.db.terminal_request().request_id().update(request.clone());
+        Ok(value) => value,
+        Err(err) => {
+            request.gemini_raw_response = Some(callback.response_body.clone());
+            request.phase = TerminalRequestPhase::Failed;
+            request.validator_success = Some(false);
+            request.validator_reason = Some(format!("Invalid Gemini decision JSON: {err}"));
+            request.updated_at = ctx.timestamp;
+            ctx.db
+                .terminal_request()
+                .request_id()
+                .update(request.clone());
 
-                fail_game_state(
-                    ctx,
-                    &mut game_state,
-                    request.request_id,
-                    request.player_identity,
-                    TerminalStatus::Failed,
-                    false,
-                    format!("Invalid Gemini decision JSON: {err}"),
-                );
-                return Ok(());
-            }
-        };
+            fail_game_state(
+                ctx,
+                &mut game_state,
+                request.request_id,
+                request.player_identity,
+                TerminalStatus::Failed,
+                false,
+                format!("Invalid Gemini decision JSON: {err}"),
+            );
+            return Ok(());
+        }
+    };
 
     request.gemini_raw_response = Some(callback.response_body.clone());
     request.validator_success = Some(decision.success);
@@ -517,7 +561,10 @@ pub fn _gemini_validator_callback(
         TerminalRequestPhase::Failed
     };
     request.updated_at = ctx.timestamp;
-    ctx.db.terminal_request().request_id().update(request.clone());
+    ctx.db
+        .terminal_request()
+        .request_id()
+        .update(request.clone());
 
     game_state.is_processing_terminal = false;
     if game_state.active_terminal_request == Some(request.request_id) {
@@ -589,9 +636,8 @@ fn repair_stale_lock_if_needed(ctx: &ReducerContext, state: &mut GameState) {
         state.is_processing_terminal = false;
         state.active_terminal_request = None;
         state.terminal_status = TerminalStatus::Idle;
-        state.last_terminal_message = Some(
-            "Recovered from a stale terminal lock left by a missing request".to_string(),
-        );
+        state.last_terminal_message =
+            Some("Recovered from a stale terminal lock left by a missing request".to_string());
         state.updated_at = ctx.timestamp;
         ctx.db.game_state().game_id().update(state.clone());
     }
@@ -672,8 +718,7 @@ fn ensure_module_owner(ctx: &ReducerContext) -> Result<(), String> {
         .owner_key()
         .find(MODULE_OWNER_KEY)
         .ok_or_else(|| {
-            "module owner is not initialized; republish with clear to run init reducer"
-                .to_string()
+            "module owner is not initialized; republish with clear to run init reducer".to_string()
         })?;
 
     if owner.owner_identity != ctx.sender() {

@@ -1,6 +1,12 @@
 use spacetimedb::{Identity, ScheduleAt, SpacetimeType, Timestamp};
 
+use crate::api::content_http::{
+    process_round_content_request, process_villain_speech_request, process_villain_tts_request,
+};
 use crate::api::http_wrappers::{process_armoriq_request, process_gemini_validator_request};
+use crate::reducers::content::{
+    _round_content_callback, _villain_speech_callback, _villain_tts_callback,
+};
 use crate::reducers::terminal::{_armoriq_callback, _gemini_validator_callback};
 
 /// The singleton game row used by the non-room legacy reducers in this scaffold.
@@ -11,6 +17,9 @@ pub const ROOM_GAME_ID_OFFSET: u64 = 10_000;
 
 /// The singleton configuration row holding secrets and remote endpoint settings.
 pub const ACTIVE_SERVER_CONFIG_KEY: u8 = 1;
+
+/// The singleton configuration row holding optional ElevenLabs voice settings.
+pub const ACTIVE_VOICE_CONFIG_KEY: u8 = 1;
 
 /// The singleton row key storing which identity is allowed to run admin reducers.
 pub const MODULE_OWNER_KEY: u8 = 1;
@@ -40,6 +49,33 @@ pub enum TerminalRequestPhase {
     PendingArmorIq,
     PendingGeminiValidator,
     Rejected,
+    Failed,
+    Succeeded,
+}
+
+/// Public lifecycle state for room-scoped clue/manual generation and villain speech artifacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SpacetimeType)]
+pub enum GenerationStatus {
+    Idle,
+    PendingGemini,
+    PendingTts,
+    Failed,
+    Succeeded,
+}
+
+/// Fine-grained request state tracked for clue/manual generation jobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SpacetimeType)]
+pub enum RoundGenerationPhase {
+    PendingGemini,
+    Failed,
+    Succeeded,
+}
+
+/// Fine-grained request state tracked for villain speech generation and optional TTS jobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SpacetimeType)]
+pub enum VillainSpeechPhase {
+    PendingGemini,
+    PendingTts,
     Failed,
     Succeeded,
 }
@@ -137,6 +173,62 @@ pub struct ServerConfig {
     pub gemini_villain_model: String,
 }
 
+/// Optional ElevenLabs configuration used when villain speech should also be synthesized to audio.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(accessor = voice_config, private)]
+pub struct VoiceConfig {
+    #[primary_key]
+    pub config_key: u8,
+    pub elevenlabs_api_base_url: String,
+    pub elevenlabs_api_key: String,
+    pub elevenlabs_default_voice_id: String,
+    pub elevenlabs_default_model_id: String,
+}
+
+/// Public artifact row holding the latest clue/manual generation output for a room and round.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(accessor = round_content_artifact, public)]
+pub struct RoundContentArtifact {
+    #[primary_key]
+    pub artifact_key: String,
+    #[index(btree)]
+    pub room_id: String,
+    #[index(btree)]
+    pub game_id: u64,
+    pub round_key: String,
+    pub status: GenerationStatus,
+    pub request_payload_json: String,
+    pub response_payload_json: Option<String>,
+    pub hidden_answer_candidate: Option<String>,
+    pub active_request_id: Option<u64>,
+    pub last_error: Option<String>,
+    pub updated_at: Timestamp,
+}
+
+/// Public artifact row holding the latest villain speech payload for a room and scope.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(accessor = villain_speech_artifact, public)]
+pub struct VillainSpeechArtifact {
+    #[primary_key]
+    pub artifact_key: String,
+    #[index(btree)]
+    pub room_id: String,
+    #[index(btree)]
+    pub game_id: u64,
+    pub round_key: Option<String>,
+    pub status: GenerationStatus,
+    pub request_payload_json: String,
+    pub speech_cues_json: Option<String>,
+    pub selected_cue_id: Option<String>,
+    pub selected_speech_text: Option<String>,
+    pub audio_base64: Option<String>,
+    pub mime_type: Option<String>,
+    pub tts_provider: Option<String>,
+    pub active_request_id: Option<u64>,
+    pub last_error: Option<String>,
+    pub updated_at: Timestamp,
+}
+
 /// Durable audit row for every terminal submission and each asynchronous transition it takes.
 #[derive(Debug, Clone)]
 #[spacetimedb::table(accessor = terminal_request, private)]
@@ -157,6 +249,59 @@ pub struct TerminalRequest {
     pub gemini_raw_response: Option<String>,
     pub validator_success: Option<bool>,
     pub validator_reason: Option<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+/// Durable request row for room-scoped clue/manual generation.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(accessor = round_generation_request, private)]
+pub struct RoundGenerationRequest {
+    #[primary_key]
+    #[auto_inc]
+    pub request_id: u64,
+    pub artifact_key: String,
+    #[index(btree)]
+    pub room_id: String,
+    #[index(btree)]
+    pub game_id: u64,
+    pub round_key: String,
+    #[index(btree)]
+    pub player_identity: Identity,
+    pub request_payload_json: String,
+    pub response_schema_json: String,
+    pub phase: RoundGenerationPhase,
+    pub response_payload_json: Option<String>,
+    pub hidden_answer_candidate: Option<String>,
+    pub error_message: Option<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+/// Durable request row for villain speech generation and optional audio synthesis.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(accessor = villain_speech_request, private)]
+pub struct VillainSpeechRequest {
+    #[primary_key]
+    #[auto_inc]
+    pub request_id: u64,
+    pub artifact_key: String,
+    #[index(btree)]
+    pub room_id: String,
+    #[index(btree)]
+    pub game_id: u64,
+    #[index(btree)]
+    pub player_identity: Identity,
+    pub round_key: Option<String>,
+    pub request_payload_json: String,
+    pub phase: VillainSpeechPhase,
+    pub speech_cues_json: Option<String>,
+    pub selected_cue_id: Option<String>,
+    pub selected_speech_text: Option<String>,
+    pub audio_base64: Option<String>,
+    pub mime_type: Option<String>,
+    pub tts_provider: Option<String>,
+    pub error_message: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -216,5 +361,105 @@ pub struct GeminiValidatorCallbackSchedule {
     pub request_id: u64,
     pub status_code: u16,
     pub response_body: String,
+    pub transport_error: Option<String>,
+}
+
+/// Queue row that schedules the outbound clue/manual generation Gemini procedure.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(
+    accessor = round_generation_request_schedule,
+    private,
+    scheduled(process_round_content_request)
+)]
+pub struct RoundGenerationRequestSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    pub request_id: u64,
+}
+
+/// Queue row that schedules the reducer-side handling of a clue/manual Gemini result.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(
+    accessor = round_generation_callback_schedule,
+    private,
+    scheduled(_round_content_callback)
+)]
+pub struct RoundGenerationCallbackSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    pub request_id: u64,
+    pub status_code: u16,
+    pub response_body: String,
+    pub transport_error: Option<String>,
+}
+
+/// Queue row that schedules the outbound villain speech Gemini procedure.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(
+    accessor = villain_speech_request_schedule,
+    private,
+    scheduled(process_villain_speech_request)
+)]
+pub struct VillainSpeechRequestSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    pub request_id: u64,
+}
+
+/// Queue row that schedules the reducer-side handling of a villain speech Gemini result.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(
+    accessor = villain_speech_callback_schedule,
+    private,
+    scheduled(_villain_speech_callback)
+)]
+pub struct VillainSpeechCallbackSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    pub request_id: u64,
+    pub status_code: u16,
+    pub response_body: String,
+    pub transport_error: Option<String>,
+}
+
+/// Queue row that schedules the outbound ElevenLabs TTS procedure for villain speech.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(
+    accessor = villain_tts_request_schedule,
+    private,
+    scheduled(process_villain_tts_request)
+)]
+pub struct VillainTtsRequestSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    pub request_id: u64,
+}
+
+/// Queue row that schedules the reducer-side handling of a villain TTS result.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(
+    accessor = villain_tts_callback_schedule,
+    private,
+    scheduled(_villain_tts_callback)
+)]
+pub struct VillainTtsCallbackSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    pub request_id: u64,
+    pub status_code: u16,
+    pub response_body_base64: String,
+    pub mime_type: Option<String>,
     pub transport_error: Option<String>,
 }

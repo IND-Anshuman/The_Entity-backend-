@@ -57,6 +57,17 @@ pub struct RelayClueGeneratorRequest {
     pub objective: Option<String>,
 }
 
+/// Flexible JSON payload forwarded by Android for a room-scoped round generation request.
+///
+/// The payload is intentionally loose so each round can evolve independently without forcing
+/// frequent reducer signature changes. Known top-level keys such as `requested_persona`,
+/// `theme`, `setting`, `difficulty`, and round-specific objects are all preserved verbatim.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RoundGenerationPayload {
+    #[serde(flatten)]
+    pub fields: serde_json::Map<String, Value>,
+}
+
 /// Local relay request contract for terminal validation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayTerminalValidatorRequest {
@@ -86,6 +97,41 @@ pub struct RelayVillainSpeechResponse {
     #[serde(default)]
     pub mime_type: Option<String>,
     pub tts_provider: String,
+}
+
+/// Flexible request payload for room-scoped villain speech generation.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct VillainSpeechGenerationPayload {
+    #[serde(default)]
+    pub round_key: Option<String>,
+    #[serde(default)]
+    pub villain_name: Option<String>,
+    #[serde(default)]
+    pub scene: Option<String>,
+    #[serde(default)]
+    pub tone: Option<String>,
+    #[serde(default)]
+    pub voice_id: Option<String>,
+    #[serde(default)]
+    pub voice_model_id: Option<String>,
+    #[serde(default)]
+    pub selected_cue_id: Option<String>,
+    #[serde(default)]
+    pub synthesize_audio: Option<bool>,
+    #[serde(default)]
+    pub game_package: Option<Value>,
+    #[serde(default)]
+    pub round_output: Option<Value>,
+    #[serde(default)]
+    pub clue_contexts: Option<Value>,
+    #[serde(flatten)]
+    pub extra_fields: serde_json::Map<String, Value>,
+}
+
+/// Structured Gemini response for villain speech generation before optional TTS synthesis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VillainSpeechGeminiResponse {
+    pub speech_cues: Vec<VillainSpeechCue>,
 }
 
 /// A clue beat revealed to Player 1 during a round.

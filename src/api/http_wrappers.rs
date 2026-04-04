@@ -2,17 +2,27 @@ use serde_json::{json, Value};
 use spacetimedb::{log, ProcedureContext, ReducerContext, Table};
 
 use crate::models::api_schemas::{
-    ArmorIqContext, ArmorIqRequest, GeminiContent, GeminiGenerateContentRequest,
-    GeminiGenerateContentResponse, GeminiGenerationConfig, GeminiPart,
+    ArmorIqContext, ArmorIqRequest, ArmorIqResponse, GeminiContent, GeminiGenerateContentRequest,
+    GeminiGenerateContentResponse, GeminiGenerationConfig, GeminiPart, GeminiValidatorDecision,
     RelayTerminalValidatorRequest,
 };
 use crate::tables::state::{
     armoriq_callback_schedule, armoriq_request_schedule, game_state,
     gemini_validator_callback_schedule, gemini_validator_request_schedule, server_config,
     terminal_request, ArmoriqCallbackSchedule, ArmoriqRequestSchedule,
-    GeminiValidatorCallbackSchedule, GeminiValidatorRequestSchedule, ServerConfig,
-    TerminalRequest, TerminalRequestPhase, TerminalStatus, ACTIVE_SERVER_CONFIG_KEY,
+    GeminiValidatorCallbackSchedule, GeminiValidatorRequestSchedule, ServerConfig, TerminalRequest,
+    TerminalRequestPhase, TerminalStatus, ACTIVE_SERVER_CONFIG_KEY,
 };
+
+enum ArmoriqDispatch {
+    Http(spacetimedb::http::Request<String>),
+    LocalMock(String),
+}
+
+enum GeminiValidatorDispatch {
+    Http(spacetimedb::http::Request<String>),
+    LocalMock(String),
+}
 
 /// Reducer-side helper that enqueues the non-blocking ArmorIQ verification hop.
 ///
@@ -62,7 +72,7 @@ pub fn process_armoriq_request(ctx: &mut ProcedureContext, job: ArmoriqRequestSc
     });
 
     let prepared = ctx.try_with_tx(|tx| prepare_armoriq_request(tx, job.request_id));
-    let (request_id, http_request) = match prepared {
+    let (request_id, dispatch) = match prepared {
         Ok(value) => value,
         Err(err) => {
             fail_request_without_callback(ctx, job.request_id, err);
@@ -70,20 +80,25 @@ pub fn process_armoriq_request(ctx: &mut ProcedureContext, job: ArmoriqRequestSc
         }
     };
 
-    match ctx.http.send(http_request) {
-        Ok(response) => {
-            let (parts, body) = response.into_parts();
-            enqueue_armoriq_callback(
-                ctx,
-                request_id,
-                parts.status.as_u16(),
-                body.into_string_lossy(),
-                None,
-            );
+    match dispatch {
+        ArmoriqDispatch::LocalMock(response_body) => {
+            enqueue_armoriq_callback(ctx, request_id, 200, response_body, None);
         }
-        Err(err) => {
-            enqueue_armoriq_callback(ctx, request_id, 0, String::new(), Some(err.to_string()));
-        }
+        ArmoriqDispatch::Http(http_request) => match ctx.http.send(http_request) {
+            Ok(response) => {
+                let (parts, body) = response.into_parts();
+                enqueue_armoriq_callback(
+                    ctx,
+                    request_id,
+                    parts.status.as_u16(),
+                    body.into_string_lossy(),
+                    None,
+                );
+            }
+            Err(err) => {
+                enqueue_armoriq_callback(ctx, request_id, 0, String::new(), Some(err.to_string()));
+            }
+        },
     }
 }
 
@@ -106,7 +121,7 @@ pub fn process_gemini_validator_request(
     });
 
     let prepared = ctx.try_with_tx(|tx| prepare_gemini_validator_request(tx, job.request_id));
-    let (request_id, http_request) = match prepared {
+    let (request_id, dispatch) = match prepared {
         Ok(value) => value,
         Err(err) => {
             fail_request_without_callback(ctx, job.request_id, err);
@@ -114,27 +129,32 @@ pub fn process_gemini_validator_request(
         }
     };
 
-    match ctx.http.send(http_request) {
-        Ok(response) => {
-            let (parts, body) = response.into_parts();
-            enqueue_gemini_callback(
-                ctx,
-                request_id,
-                parts.status.as_u16(),
-                body.into_string_lossy(),
-                None,
-            );
+    match dispatch {
+        GeminiValidatorDispatch::LocalMock(response_body) => {
+            enqueue_gemini_callback(ctx, request_id, 200, response_body, None);
         }
-        Err(err) => {
-            enqueue_gemini_callback(ctx, request_id, 0, String::new(), Some(err.to_string()));
-        }
+        GeminiValidatorDispatch::Http(http_request) => match ctx.http.send(http_request) {
+            Ok(response) => {
+                let (parts, body) = response.into_parts();
+                enqueue_gemini_callback(
+                    ctx,
+                    request_id,
+                    parts.status.as_u16(),
+                    body.into_string_lossy(),
+                    None,
+                );
+            }
+            Err(err) => {
+                enqueue_gemini_callback(ctx, request_id, 0, String::new(), Some(err.to_string()));
+            }
+        },
     }
 }
 
 /// Extracts the first text part from a Gemini `generateContent` response envelope.
 pub fn extract_gemini_text(body: &str) -> Result<String, String> {
-    let envelope: GeminiGenerateContentResponse =
-        serde_json::from_str(body).map_err(|err| format!("failed to parse Gemini envelope: {err}"))?;
+    let envelope: GeminiGenerateContentResponse = serde_json::from_str(body)
+        .map_err(|err| format!("failed to parse Gemini envelope: {err}"))?;
 
     envelope
         .candidates
@@ -148,7 +168,7 @@ pub fn extract_gemini_text(body: &str) -> Result<String, String> {
 fn prepare_armoriq_request(
     tx: &spacetimedb::TxContext,
     request_id: u64,
-) -> Result<(u64, spacetimedb::http::Request<String>), String> {
+) -> Result<(u64, ArmoriqDispatch), String> {
     let request = tx
         .db
         .terminal_request()
@@ -157,19 +177,27 @@ fn prepare_armoriq_request(
         .ok_or_else(|| format!("terminal request {request_id} no longer exists"))?;
 
     let config = load_server_config(tx)?;
+    if should_use_local_dev_mock_for_url(&config.armoriq_verify_url) {
+        let response_body = build_local_armoriq_mock_response(&request)?;
+        return Ok((
+            request.request_id,
+            ArmoriqDispatch::LocalMock(response_body),
+        ));
+    }
+
     let http_request = build_armoriq_http_request(
         &config,
         request.player_input.clone(),
         request.hidden_answer_snapshot.clone(),
     )?;
 
-    Ok((request.request_id, http_request))
+    Ok((request.request_id, ArmoriqDispatch::Http(http_request)))
 }
 
 fn prepare_gemini_validator_request(
     tx: &spacetimedb::TxContext,
     request_id: u64,
-) -> Result<(u64, spacetimedb::http::Request<String>), String> {
+) -> Result<(u64, GeminiValidatorDispatch), String> {
     let request = tx
         .db
         .terminal_request()
@@ -184,8 +212,23 @@ fn prepare_gemini_validator_request(
     }
 
     let config = load_server_config(tx)?;
+    if config
+        .local_llm_relay_base_url
+        .as_deref()
+        .is_some_and(should_use_local_dev_mock_for_url)
+    {
+        let response_body = build_local_gemini_mock_response(&request)?;
+        return Ok((
+            request.request_id,
+            GeminiValidatorDispatch::LocalMock(response_body),
+        ));
+    }
+
     let http_request = build_gemini_validator_http_request(&config, &request)?;
-    Ok((request.request_id, http_request))
+    Ok((
+        request.request_id,
+        GeminiValidatorDispatch::Http(http_request),
+    ))
 }
 
 fn load_server_config(tx: &spacetimedb::TxContext) -> Result<ServerConfig, String> {
@@ -206,7 +249,10 @@ fn build_armoriq_http_request(
     input: String,
     hidden_answer: String,
 ) -> Result<spacetimedb::http::Request<String>, String> {
-    require_non_empty("ServerConfig.armoriq_verify_url", &config.armoriq_verify_url)?;
+    require_non_empty(
+        "ServerConfig.armoriq_verify_url",
+        &config.armoriq_verify_url,
+    )?;
     require_non_empty(
         "ServerConfig.armoriq_api_key_header",
         &config.armoriq_api_key_header,
@@ -247,7 +293,10 @@ fn build_gemini_validator_http_request(
         return build_local_relay_validator_request(relay_base_url, request);
     }
 
-    require_non_empty("ServerConfig.gemini_api_base_url", &config.gemini_api_base_url)?;
+    require_non_empty(
+        "ServerConfig.gemini_api_base_url",
+        &config.gemini_api_base_url,
+    )?;
     require_non_empty("ServerConfig.gemini_api_key", &config.gemini_api_key)?;
     require_non_empty(
         "ServerConfig.gemini_validator_model",
@@ -263,16 +312,13 @@ fn build_gemini_validator_http_request(
             "Player input:\n{}\n\n",
             "Hidden answer:\n{}\n"
         ),
-        request.player_input,
-        request.hidden_answer_snapshot
+        request.player_input, request.hidden_answer_snapshot
     );
 
     let payload = GeminiGenerateContentRequest {
         contents: vec![GeminiContent {
             role: Some("user".to_string()),
-            parts: vec![GeminiPart {
-                text: Some(prompt),
-            }],
+            parts: vec![GeminiPart { text: Some(prompt) }],
         }],
         generation_config: GeminiGenerationConfig {
             response_mime_type: "application/json".to_string(),
@@ -338,6 +384,81 @@ fn gemini_validator_response_schema() -> Value {
     })
 }
 
+/// The standalone host refuses outbound calls to loopback / special-purpose addresses.
+/// When local development is configured to target a localhost relay, we short-circuit the
+/// request with the same deterministic semantics the relay mock uses so the async workflow
+/// remains testable without changing production behavior.
+fn should_use_local_dev_mock_for_url(url: &str) -> bool {
+    let normalized = url.trim().to_ascii_lowercase();
+    normalized.starts_with("http://127.")
+        || normalized.starts_with("https://127.")
+        || normalized.starts_with("http://localhost")
+        || normalized.starts_with("https://localhost")
+        || normalized.starts_with("http://0.0.0.0")
+        || normalized.starts_with("https://0.0.0.0")
+}
+
+fn build_local_armoriq_mock_response(request: &TerminalRequest) -> Result<String, String> {
+    let normalized_input = normalize_loose(&request.player_input);
+    let normalized_answer = normalize_loose(&request.hidden_answer_snapshot);
+    let matches = !normalized_answer.is_empty()
+        && (normalized_input == normalized_answer || normalized_input.contains(&normalized_answer));
+
+    let response = ArmorIqResponse {
+        allowed: matches,
+        block_reason: if matches {
+            None
+        } else {
+            Some("Input does not satisfy the terminal override policy.".to_string())
+        },
+    };
+
+    serde_json::to_string(&response)
+        .map_err(|err| format!("failed to serialize local ArmorIQ mock response: {err}"))
+}
+
+fn build_local_gemini_mock_response(request: &TerminalRequest) -> Result<String, String> {
+    let normalized_input = normalize_loose(&request.player_input);
+    let normalized_answer = normalize_loose(&request.hidden_answer_snapshot);
+    let exact_submission = !normalized_answer.is_empty()
+        && (normalized_input == normalized_answer
+            || [
+                format!("submit {}", normalized_answer),
+                format!("enter {}", normalized_answer),
+                format!("run {}", normalized_answer),
+                format!("input {}", normalized_answer),
+                format!("execute {}", normalized_answer),
+                format!("say {}", normalized_answer),
+            ]
+            .contains(&normalized_input));
+
+    let response = GeminiValidatorDecision {
+        success: exact_submission,
+        reason: if exact_submission {
+            "The terminal input is a valid direct submission of the secret phrase.".to_string()
+        } else {
+            "The terminal input does not contain a valid direct submission of the secret phrase."
+                .to_string()
+        },
+    };
+
+    serde_json::to_string(&response)
+        .map_err(|err| format!("failed to serialize local Gemini mock response: {err}"))
+}
+
+fn normalize_loose(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+        } else {
+            normalized.push(' ');
+        }
+    }
+
+    normalized.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn enqueue_armoriq_callback(
     ctx: &mut ProcedureContext,
     request_id: u64,
@@ -380,12 +501,12 @@ fn enqueue_gemini_callback(
     });
 }
 
-fn fail_request_without_callback(
-    ctx: &mut ProcedureContext,
-    request_id: u64,
-    message: String,
-) {
-    log::error!("terminal request {} failed before callback dispatch: {}", request_id, message);
+fn fail_request_without_callback(ctx: &mut ProcedureContext, request_id: u64, message: String) {
+    log::error!(
+        "terminal request {} failed before callback dispatch: {}",
+        request_id,
+        message
+    );
 
     ctx.with_tx(|tx| {
         if let Some(mut request) = tx.db.terminal_request().request_id().find(request_id) {
@@ -393,7 +514,10 @@ fn fail_request_without_callback(
             request.validator_success = Some(false);
             request.validator_reason = Some(message.clone());
             request.updated_at = tx.timestamp;
-            tx.db.terminal_request().request_id().update(request.clone());
+            tx.db
+                .terminal_request()
+                .request_id()
+                .update(request.clone());
 
             if let Some(mut game_state) = tx.db.game_state().game_id().find(request.game_id) {
                 if game_state.active_terminal_request == Some(request_id) {

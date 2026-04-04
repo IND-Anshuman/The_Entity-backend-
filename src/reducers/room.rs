@@ -10,10 +10,7 @@ use crate::tables::state::{
 /// The caller becomes both the host and Player 1. The reducer returns the generated room id so
 /// Android can immediately display or share it.
 #[spacetimedb::reducer]
-pub fn initiate_room(
-    ctx: &ReducerContext,
-    villain_name: Option<String>,
-) -> Result<(), String> {
+pub fn initiate_room(ctx: &ReducerContext, villain_name: Option<String>) -> Result<(), String> {
     let sequence = ctx.db.room_sequence().insert(RoomSequence {
         room_seq: 0,
         created_at: ctx.timestamp,
@@ -55,7 +52,12 @@ pub fn initiate_room(
         terminated_at: None,
     });
 
-    upsert_room_ticket(ctx, ctx.sender(), Some(room_id), Some(RoomStatus::WaitingForPlayers));
+    upsert_room_ticket(
+        ctx,
+        ctx.sender(),
+        Some(room_id),
+        Some(RoomStatus::WaitingForPlayers),
+    );
     Ok(())
 }
 
@@ -94,7 +96,12 @@ pub fn join_room(ctx: &ReducerContext, room_id: String) -> Result<(), String> {
     game_state.updated_at = ctx.timestamp;
     ctx.db.game_state().game_id().update(game_state);
 
-    upsert_room_ticket(ctx, ctx.sender(), Some(room.room_id), Some(RoomStatus::Ready));
+    upsert_room_ticket(
+        ctx,
+        ctx.sender(),
+        Some(room.room_id),
+        Some(RoomStatus::Ready),
+    );
     Ok(())
 }
 
@@ -130,7 +137,12 @@ pub fn terminate_room(ctx: &ReducerContext, room_id: String) -> Result<(), Strin
     game_state.updated_at = ctx.timestamp;
     ctx.db.game_state().game_id().update(game_state);
 
-    upsert_room_ticket(ctx, ctx.sender(), Some(room.room_id), Some(RoomStatus::Terminated));
+    upsert_room_ticket(
+        ctx,
+        ctx.sender(),
+        Some(room.room_id),
+        Some(RoomStatus::Terminated),
+    );
     Ok(())
 }
 
