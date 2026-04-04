@@ -97,6 +97,22 @@ pub struct GameState {
     pub last_terminal_message: Option<String>,
     pub last_terminal_actor: Option<Identity>,
     pub updated_at: Timestamp,
+    #[default(None::<String>)]
+    pub active_round_key: Option<String>,
+    #[default(None::<String>)]
+    pub active_persona_name: Option<String>,
+    #[default(0u32)]
+    pub terminal_strikes: u32,
+    #[default(3u32)]
+    pub terminal_max_strikes: u32,
+    #[default(false)]
+    pub is_terminal_dead: bool,
+    #[default(0u32)]
+    pub completed_rounds: u32,
+    #[default(0u32)]
+    pub revealed_clue_count: u32,
+    #[default(None::<String>)]
+    pub last_terminal_reply: Option<String>,
 }
 
 /// Private secrets for a game session, intentionally isolated from the public state row.
@@ -172,6 +188,10 @@ pub struct ServerConfig {
     pub gemini_validator_model: String,
     pub gemini_clue_generator_model: String,
     pub gemini_villain_model: String,
+    #[default(None::<String>)]
+    pub gemini_terminal_api_key: Option<String>,
+    #[default(None::<String>)]
+    pub gemini_terminal_model: Option<String>,
 }
 
 /// Optional ElevenLabs configuration used when villain speech should also be synthesized to audio.
@@ -253,6 +273,47 @@ pub struct TerminalRequest {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub retries: Option<u32>,
+    #[default(None::<String>)]
+    pub round_key_snapshot: Option<String>,
+    #[default(None::<String>)]
+    pub persona_name_snapshot: Option<String>,
+    #[default(None::<String>)]
+    pub forbidden_words_snapshot_json: Option<String>,
+    #[default(None::<String>)]
+    pub conversation_history_snapshot_json: Option<String>,
+    #[default(None::<String>)]
+    pub queued_clue_id_snapshot: Option<String>,
+    #[default(None::<String>)]
+    pub queued_clue_text_snapshot: Option<String>,
+    #[default(None::<String>)]
+    pub terminal_reply: Option<String>,
+    #[default(None::<bool>)]
+    pub spoke_kill_phrase: Option<bool>,
+    #[default(None::<u32>)]
+    pub strike_count_after: Option<u32>,
+}
+
+/// Private round-scoped terminal configuration and persistent conversation state.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(accessor = terminal_round_state, private)]
+pub struct TerminalRoundState {
+    #[primary_key]
+    pub game_id: u64,
+    pub round_key: String,
+    pub persona_name: String,
+    pub persona_prompt: String,
+    pub glitch_tone: String,
+    pub kill_phrase_part: String,
+    pub forbidden_words_json: String,
+    pub clue_lines_json: String,
+    pub conversation_history_json: String,
+    pub next_clue_index: u32,
+    pub max_strikes: u32,
+    pub strikes: u32,
+    pub player_dead: bool,
+    pub round_completed: bool,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
 }
 
 /// Durable request row for room-scoped clue/manual generation.

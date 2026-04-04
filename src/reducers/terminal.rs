@@ -1,27 +1,22 @@
 use spacetimedb::{log, Identity, ReducerContext, Table};
 
 use crate::api::http_wrappers::{extract_gemini_text, queue_gemini_validator, verify_with_armoriq};
-use crate::models::api_schemas::{ArmorIqResponse, GeminiValidatorDecision};
+use crate::models::api_schemas::{
+    ArmorIqResponse, GeminiTerminalTurnResponse, TerminalClueLine, TerminalConversationMessage,
+    TerminalRoundSetupPayload,
+};
 use crate::reducers::room::resolve_room_game_id;
 use crate::tables::state::{
     armoriq_callback_schedule, game_secret, game_state, gemini_validator_callback_schedule,
-    module_owner, server_config, terminal_request, ArmoriqCallbackSchedule, GameSecret, GameState,
-    GeminiValidatorCallbackSchedule, ModuleOwner, ServerConfig, TerminalRequest,
-    TerminalRequestPhase, TerminalStatus, ACTIVE_SERVER_CONFIG_KEY, DEFAULT_GAME_ID,
-    MODULE_OWNER_KEY,
+    module_owner, server_config, terminal_request, terminal_round_state, ArmoriqCallbackSchedule,
+    GameSecret, GameState, GeminiValidatorCallbackSchedule, ModuleOwner, ServerConfig,
+    TerminalRequest, TerminalRequestPhase, TerminalRoundState, TerminalStatus,
+    ACTIVE_SERVER_CONFIG_KEY, DEFAULT_GAME_ID, MODULE_OWNER_KEY,
 };
 
-const MAX_ROUNDS: u32 = 3;
-const FORBIDDEN_TERMINAL_WORDS: &[&str] = &[
-    "hack",
-    "bypass",
-    "exploit",
-    "cheat",
-    "override",
-    "inject",
-];
+const MAX_ROUNDS: u32 = 4;
+const MAX_CONVERSATION_MESSAGES: usize = 16;
 
-/// Captures the module owner identity on first publish (or clear) for admin authorization.
 #[spacetimedb::reducer(init)]
 pub fn init(ctx: &ReducerContext) {
     if ctx
@@ -39,18 +34,29 @@ pub fn init(ctx: &ReducerContext) {
     }
 }
 
-/// Trigger reducer for Player 1 terminal submissions.
-///
-/// The reducer only mutates state and enqueues the external validation workflow; it never
-/// performs network I/O directly, which keeps the transaction deterministic and replay-safe.
+#[spacetimedb::reducer]
+pub fn configure_terminal_round(
+    ctx: &ReducerContext,
+    setup_payload_json: String,
+) -> Result<(), String> {
+    configure_terminal_round_for_game(ctx, DEFAULT_GAME_ID, setup_payload_json, true)
+}
+
+#[spacetimedb::reducer]
+pub fn configure_terminal_round_for_room(
+    ctx: &ReducerContext,
+    room_id: String,
+    setup_payload_json: String,
+) -> Result<(), String> {
+    let game_id = resolve_room_game_id(ctx, room_id.trim())?;
+    configure_terminal_round_for_game(ctx, game_id, setup_payload_json, false)
+}
+
 #[spacetimedb::reducer]
 pub fn submit_terminal(ctx: &ReducerContext, input: String) -> Result<(), String> {
     submit_terminal_for_game(ctx, DEFAULT_GAME_ID, input, true)
 }
 
-/// Room-scoped trigger reducer for Player 1 terminal submissions.
-///
-/// Android clients should use this reducer so each room stays fully isolated.
 #[spacetimedb::reducer]
 pub fn submit_terminal_for_room(
     ctx: &ReducerContext,
@@ -61,82 +67,6 @@ pub fn submit_terminal_for_room(
     submit_terminal_for_game(ctx, game_id, input, false)
 }
 
-fn submit_terminal_for_game(
-    ctx: &ReducerContext,
-    game_id: u64,
-    input: String,
-    allow_legacy_create: bool,
-) -> Result<(), String> {
-    let normalized_input = input.trim().to_string();
-    if normalized_input.is_empty() {
-        return Err("terminal input must not be empty".to_string());
-    }
-
-    let forbidden_word = detect_forbidden_word(&normalized_input);
-
-    let mut game_state = if allow_legacy_create {
-        load_or_create_game_state(ctx)
-    } else {
-        load_game_state(ctx, game_id)?
-    };
-    bind_or_authorize_player_one(ctx.sender(), &mut game_state)?;
-    repair_stale_lock_if_needed(ctx, &mut game_state);
-
-    if game_state.is_processing_terminal {
-        return Err("terminal validation is already in progress".to_string());
-    }
-
-    if let Some(word) = forbidden_word {
-        register_forbidden_word_penalty(ctx, &mut game_state, normalized_input, word);
-        return Ok(());
-    }
-
-    let hidden_answer = ctx
-        .db
-        .game_secret()
-        .game_id()
-        .find(game_state.game_id)
-        .map(|secret| secret.hidden_answer)
-        .filter(|value: &String| !value.trim().is_empty())
-        .ok_or_else(|| {
-            format!(
-                "hidden answer for game {} is not configured yet",
-                game_state.game_id
-            )
-        })?;
-
-    let request = ctx.db.terminal_request().insert(TerminalRequest {
-        request_id: 0,
-        game_id: game_state.game_id,
-        player_identity: ctx.sender(),
-        phase: TerminalRequestPhase::PendingArmorIq,
-        player_input: normalized_input.clone(),
-        hidden_answer_snapshot: hidden_answer.clone(),
-        armoriq_allowed: None,
-        armoriq_block_reason: None,
-        armoriq_raw_response: None,
-        gemini_raw_response: None,
-        validator_success: None,
-        validator_reason: None,
-        created_at: ctx.timestamp,
-        updated_at: ctx.timestamp,
-        retries: Some(0),
-    });
-
-    game_state.terminal_status = TerminalStatus::PendingArmorIq;
-    game_state.last_terminal_result = None;
-    game_state.last_terminal_message = Some(format!(
-        "Input received: '{}'. ArmorIQ validation in progress.",
-        normalized_input
-    ));
-    game_state.last_terminal_actor = Some(ctx.sender());
-    game_state.updated_at = ctx.timestamp;
-    ctx.db.game_state().game_id().update(game_state);
-
-    verify_with_armoriq(ctx, request.request_id, normalized_input, hidden_answer)
-}
-
-/// Stores or updates the hidden terminal answer for the default game session.
 #[spacetimedb::reducer]
 pub fn set_hidden_answer(ctx: &ReducerContext, hidden_answer: String) -> Result<(), String> {
     ensure_module_owner(ctx)?;
@@ -146,11 +76,11 @@ pub fn set_hidden_answer(ctx: &ReducerContext, hidden_answer: String) -> Result<
         return Err("hidden_answer must not be empty".to_string());
     }
 
-    upsert_hidden_answer_for_game(ctx, DEFAULT_GAME_ID, normalized);
+    upsert_hidden_answer_for_game(ctx, DEFAULT_GAME_ID, normalized.clone());
+    sync_round_kill_phrase(ctx, DEFAULT_GAME_ID, normalized);
     Ok(())
 }
 
-/// Stores or updates the hidden answer for a specific room-backed game.
 #[spacetimedb::reducer]
 pub fn set_hidden_answer_for_room(
     ctx: &ReducerContext,
@@ -165,11 +95,11 @@ pub fn set_hidden_answer_for_room(
     }
 
     let game_id = resolve_room_game_id(ctx, room_id.trim())?;
-    upsert_hidden_answer_for_game(ctx, game_id, normalized);
+    upsert_hidden_answer_for_game(ctx, game_id, normalized.clone());
+    sync_round_kill_phrase(ctx, game_id, normalized);
     Ok(())
 }
 
-/// Stores or updates the external integration settings used by ArmorIQ and Gemini flows.
 #[spacetimedb::reducer]
 #[allow(clippy::too_many_arguments)]
 pub fn configure_integrations(
@@ -214,17 +144,18 @@ pub fn configure_integrations(
             armoriq_api_key: api_key,
             local_llm_relay_base_url: relay_base_url,
             gemini_api_base_url: gemini_base,
-            gemini_api_key: gemini_key,
-            gemini_validator_model: validator_model,
+            gemini_api_key: gemini_key.clone(),
+            gemini_validator_model: validator_model.clone(),
             gemini_clue_generator_model: clue_model,
             gemini_villain_model: villain_model,
+            gemini_terminal_api_key: Some(gemini_key),
+            gemini_terminal_model: Some(validator_model),
         },
     );
 
     Ok(())
 }
 
-/// Convenience reducer for a local relay-backed development setup.
 #[spacetimedb::reducer]
 pub fn configure_local_dev_integrations(
     ctx: &ReducerContext,
@@ -243,19 +174,50 @@ pub fn configure_local_dev_integrations(
             armoriq_verify_url: format!("{}/api/armoriq/verify", relay_base.trim_end_matches('/')),
             armoriq_api_key_header: "x-api-key".to_string(),
             armoriq_api_key: api_key,
-            local_llm_relay_base_url: Some(relay_base.clone()),
+            local_llm_relay_base_url: Some(relay_base),
             gemini_api_base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
             gemini_api_key: "".to_string(),
             gemini_validator_model: "gemini-2.5-flash".to_string(),
             gemini_clue_generator_model: "gemini-2.5-flash".to_string(),
             gemini_villain_model: "gemini-2.5-flash".to_string(),
+            gemini_terminal_api_key: None,
+            gemini_terminal_model: Some("gemini-2.5-flash".to_string()),
         },
     );
 
     Ok(())
 }
 
-/// Scheduled reducer that consumes the persisted ArmorIQ HTTP result.
+#[spacetimedb::reducer]
+pub fn configure_terminal_gemini(
+    ctx: &ReducerContext,
+    gemini_terminal_api_key: String,
+    gemini_terminal_model: String,
+) -> Result<(), String> {
+    ensure_module_owner(ctx)?;
+
+    let mut config = ctx
+        .db
+        .server_config()
+        .config_key()
+        .find(ACTIVE_SERVER_CONFIG_KEY)
+        .ok_or_else(|| {
+            format!(
+                "ServerConfig row {} is missing; configure integrations first",
+                ACTIVE_SERVER_CONFIG_KEY
+            )
+        })?;
+
+    config.gemini_terminal_api_key = Some(require_trimmed(
+        "gemini_terminal_api_key",
+        gemini_terminal_api_key,
+    )?);
+    config.gemini_terminal_model =
+        Some(require_trimmed("gemini_terminal_model", gemini_terminal_model)?);
+    ctx.db.server_config().config_key().update(config);
+    Ok(())
+}
+
 #[spacetimedb::reducer]
 pub fn _armoriq_callback(
     ctx: &ReducerContext,
@@ -301,10 +263,7 @@ pub fn _armoriq_callback(
         request.validator_success = Some(false);
         request.validator_reason = Some(transport_error.clone());
         request.updated_at = ctx.timestamp;
-        ctx.db
-            .terminal_request()
-            .request_id()
-            .update(request.clone());
+        ctx.db.terminal_request().request_id().update(request.clone());
 
         fail_game_state(
             ctx,
@@ -323,25 +282,22 @@ pub fn _armoriq_callback(
         request.retries = Some(current_retries + 1);
         request.phase = TerminalRequestPhase::PendingArmorIq;
         request.updated_at = ctx.timestamp;
-        ctx.db
-            .terminal_request()
-            .request_id()
-            .update(request.clone());
+        ctx.db.terminal_request().request_id().update(request.clone());
 
         verify_with_armoriq(
             ctx,
             request.request_id,
             request.player_input.clone(),
             request.hidden_answer_snapshot.clone(),
-        ).ok();
+        )
+        .ok();
         return Ok(());
     }
 
     if callback.status_code != 200 {
         request.armoriq_raw_response = Some(callback.response_body.clone());
         request.armoriq_allowed = Some(false);
-        request.armoriq_block_reason =
-            Some(format!("ArmorIQ returned HTTP {}", callback.status_code));
+        request.armoriq_block_reason = Some(format!("ArmorIQ returned HTTP {}", callback.status_code));
         request.phase = TerminalRequestPhase::Failed;
         request.validator_success = Some(false);
         request.validator_reason = Some(format!(
@@ -349,10 +305,7 @@ pub fn _armoriq_callback(
             callback.status_code
         ));
         request.updated_at = ctx.timestamp;
-        ctx.db
-            .terminal_request()
-            .request_id()
-            .update(request.clone());
+        ctx.db.terminal_request().request_id().update(request.clone());
 
         fail_game_state(
             ctx,
@@ -376,10 +329,7 @@ pub fn _armoriq_callback(
             request.validator_success = Some(false);
             request.validator_reason = Some(format!("Invalid ArmorIQ JSON: {err}"));
             request.updated_at = ctx.timestamp;
-            ctx.db
-                .terminal_request()
-                .request_id()
-                .update(request.clone());
+            ctx.db.terminal_request().request_id().update(request.clone());
 
             fail_game_state(
                 ctx,
@@ -400,18 +350,13 @@ pub fn _armoriq_callback(
     request.updated_at = ctx.timestamp;
 
     if !parsed.allowed {
+        let reason = parsed
+            .block_reason
+            .unwrap_or_else(|| "ArmorIQ blocked a system-break attempt".to_string());
         request.phase = TerminalRequestPhase::Rejected;
         request.validator_success = Some(false);
-        request.validator_reason = Some(
-            parsed
-                .block_reason
-                .clone()
-                .unwrap_or_else(|| "ArmorIQ blocked the terminal request".to_string()),
-        );
-        ctx.db
-            .terminal_request()
-            .request_id()
-            .update(request.clone());
+        request.validator_reason = Some(reason.clone());
+        ctx.db.terminal_request().request_id().update(request.clone());
 
         fail_game_state(
             ctx,
@@ -420,24 +365,21 @@ pub fn _armoriq_callback(
             request.player_identity,
             TerminalStatus::Rejected,
             false,
-            parsed
-                .block_reason
-                .unwrap_or_else(|| "ArmorIQ blocked the terminal request".to_string()),
+            reason,
         );
         return Ok(());
     }
 
     request.phase = TerminalRequestPhase::PendingGeminiValidator;
-    ctx.db
-        .terminal_request()
-        .request_id()
-        .update(request.clone());
+    request.updated_at = ctx.timestamp;
+    ctx.db.terminal_request().request_id().update(request.clone());
 
     game_state.is_processing_terminal = true;
     game_state.active_terminal_request = Some(request.request_id);
     game_state.terminal_status = TerminalStatus::PendingGeminiValidator;
     game_state.last_terminal_result = None;
-    game_state.last_terminal_message = Some("Gemini validator in progress".to_string());
+    game_state.last_terminal_message =
+        Some("ArmorIQ cleared the input. Terminal persona is responding.".to_string());
     game_state.last_terminal_actor = Some(request.player_identity);
     game_state.updated_at = ctx.timestamp;
     ctx.db.game_state().game_id().update(game_state.clone());
@@ -453,10 +395,7 @@ pub fn _armoriq_callback(
             latest_request.validator_success = Some(false);
             latest_request.validator_reason = Some(err.clone());
             latest_request.updated_at = ctx.timestamp;
-            ctx.db
-                .terminal_request()
-                .request_id()
-                .update(latest_request);
+            ctx.db.terminal_request().request_id().update(latest_request);
         }
 
         fail_game_state(
@@ -473,7 +412,6 @@ pub fn _armoriq_callback(
     Ok(())
 }
 
-/// Scheduled reducer that consumes the persisted Gemini validator HTTP result.
 #[spacetimedb::reducer]
 pub fn _gemini_validator_callback(
     ctx: &ReducerContext,
@@ -497,16 +435,32 @@ pub fn _gemini_validator_callback(
         clear_state_for_unknown_request(
             ctx,
             callback.request_id,
-            "Gemini validator callback arrived after the request row was removed".to_string(),
+            "Gemini terminal callback arrived after the request row was removed".to_string(),
         );
         return Ok(());
     };
 
     let Some(mut game_state) = ctx.db.game_state().game_id().find(request.game_id) else {
         log::warn!(
-            "Ignoring Gemini validator callback for request {} because game {} no longer exists",
+            "Ignoring Gemini terminal callback for request {} because game {} no longer exists",
             request.request_id,
             request.game_id
+        );
+        return Ok(());
+    };
+
+    let Some(mut round_state) = ctx.db.terminal_round_state().game_id().find(request.game_id) else {
+        fail_game_state(
+            ctx,
+            &mut game_state,
+            request.request_id,
+            request.player_identity,
+            TerminalStatus::Failed,
+            false,
+            format!(
+                "terminal round state for game {} is missing during Gemini callback",
+                request.game_id
+            ),
         );
         return Ok(());
     };
@@ -517,10 +471,7 @@ pub fn _gemini_validator_callback(
         request.validator_success = Some(false);
         request.validator_reason = Some(transport_error.clone());
         request.updated_at = ctx.timestamp;
-        ctx.db
-            .terminal_request()
-            .request_id()
-            .update(request.clone());
+        ctx.db.terminal_request().request_id().update(request.clone());
 
         fail_game_state(
             ctx,
@@ -539,10 +490,7 @@ pub fn _gemini_validator_callback(
         request.retries = Some(current_retries + 1);
         request.phase = TerminalRequestPhase::PendingGeminiValidator;
         request.updated_at = ctx.timestamp;
-        ctx.db
-            .terminal_request()
-            .request_id()
-            .update(request.clone());
+        ctx.db.terminal_request().request_id().update(request.clone());
 
         queue_gemini_validator(ctx, request.request_id).ok();
         return Ok(());
@@ -553,14 +501,11 @@ pub fn _gemini_validator_callback(
         request.phase = TerminalRequestPhase::Failed;
         request.validator_success = Some(false);
         request.validator_reason = Some(format!(
-            "Gemini returned non-200 status {}",
+            "Gemini terminal returned non-200 status {}",
             callback.status_code
         ));
         request.updated_at = ctx.timestamp;
-        ctx.db
-            .terminal_request()
-            .request_id()
-            .update(request.clone());
+        ctx.db.terminal_request().request_id().update(request.clone());
 
         fail_game_state(
             ctx,
@@ -574,7 +519,7 @@ pub fn _gemini_validator_callback(
         return Ok(());
     }
 
-    let decision: GeminiValidatorDecision = match serde_json::from_str(&callback.response_body)
+    let decision: GeminiTerminalTurnResponse = match serde_json::from_str(&callback.response_body)
         .or_else(|_| {
             extract_gemini_text(&callback.response_body)
                 .and_then(|text| serde_json::from_str(&text).map_err(|err| err.to_string()))
@@ -584,12 +529,9 @@ pub fn _gemini_validator_callback(
             request.gemini_raw_response = Some(callback.response_body.clone());
             request.phase = TerminalRequestPhase::Failed;
             request.validator_success = Some(false);
-            request.validator_reason = Some(format!("Invalid Gemini decision JSON: {err}"));
+            request.validator_reason = Some(format!("Invalid Gemini terminal JSON: {err}"));
             request.updated_at = ctx.timestamp;
-            ctx.db
-                .terminal_request()
-                .request_id()
-                .update(request.clone());
+            ctx.db.terminal_request().request_id().update(request.clone());
 
             fail_game_state(
                 ctx,
@@ -598,57 +540,286 @@ pub fn _gemini_validator_callback(
                 request.player_identity,
                 TerminalStatus::Failed,
                 false,
-                format!("Invalid Gemini decision JSON: {err}"),
+                format!("Invalid Gemini terminal JSON: {err}"),
             );
             return Ok(());
         }
     };
 
+    let reply = decision.terminal_reply.trim().to_string();
+    if reply.is_empty() {
+        request.gemini_raw_response = Some(callback.response_body.clone());
+        request.phase = TerminalRequestPhase::Failed;
+        request.validator_success = Some(false);
+        request.validator_reason = Some("Gemini returned an empty terminal reply".to_string());
+        request.updated_at = ctx.timestamp;
+        ctx.db.terminal_request().request_id().update(request.clone());
+
+        fail_game_state(
+            ctx,
+            &mut game_state,
+            request.request_id,
+            request.player_identity,
+            TerminalStatus::Failed,
+            false,
+            "Gemini returned an empty terminal reply".to_string(),
+        );
+        return Ok(());
+    }
+
+    let spoke_kill_phrase =
+        decision.spoke_kill_phrase || reply_mentions_phrase(&reply, &request.hidden_answer_snapshot);
+    let mut history = parse_conversation_history(&round_state)?;
+    history.push(TerminalConversationMessage {
+        role: "player".to_string(),
+        text: request.player_input.clone(),
+    });
+    history.push(TerminalConversationMessage {
+        role: "terminal".to_string(),
+        text: reply.clone(),
+    });
+    trim_conversation_history(&mut history);
+    round_state.conversation_history_json = serde_json::to_string(&history)
+        .map_err(|err| format!("failed to serialize terminal conversation history: {err}"))?;
+
+    let clue_count = count_clues(&round_state)?;
+    if request.queued_clue_id_snapshot.is_some() && round_state.next_clue_index < clue_count {
+        round_state.next_clue_index += 1;
+    }
+    round_state.updated_at = ctx.timestamp;
+
     request.gemini_raw_response = Some(callback.response_body.clone());
-    request.validator_success = Some(decision.success);
-    request.validator_reason = Some(decision.reason.clone());
-    request.phase = if decision.success {
-        TerminalRequestPhase::Succeeded
-    } else {
-        TerminalRequestPhase::Failed
-    };
+    request.terminal_reply = Some(reply.clone());
+    request.spoke_kill_phrase = Some(spoke_kill_phrase);
+    request.strike_count_after = Some(round_state.strikes);
     request.updated_at = ctx.timestamp;
-    ctx.db
-        .terminal_request()
-        .request_id()
-        .update(request.clone());
 
     game_state.is_processing_terminal = false;
     if game_state.active_terminal_request == Some(request.request_id) {
         game_state.active_terminal_request = None;
     }
-    game_state.terminal_status = if decision.success {
-        TerminalStatus::Succeeded
-    } else {
-        TerminalStatus::Failed
-    };
-    game_state.last_terminal_result = Some(decision.success);
-    if decision.success {
-        let current_round = current_round_for_game(ctx, request.game_id);
-        if current_round <= MAX_ROUNDS {
-            game_state.last_terminal_message = Some(format!(
-                "{} Advancement granted. Proceed to round_{}.",
-                decision.reason, current_round
-            ));
-        } else {
-            game_state.last_terminal_message = Some(format!(
-                "{} All rounds completed. You have escaped.",
-                decision.reason
-            ));
-        }
-    } else {
-        game_state.last_terminal_message = Some(decision.reason);
-    }
     game_state.last_terminal_actor = Some(request.player_identity);
+    game_state.last_terminal_reply = Some(reply);
+    game_state.revealed_clue_count = round_state.next_clue_index.min(clue_count);
+    game_state.terminal_strikes = round_state.strikes;
+    game_state.terminal_max_strikes = round_state.max_strikes;
+    game_state.updated_at = ctx.timestamp;
+
+    if spoke_kill_phrase {
+        let already_completed = round_state.round_completed;
+        round_state.round_completed = true;
+        request.phase = TerminalRequestPhase::Succeeded;
+        request.validator_success = Some(true);
+        request.validator_reason = Some("The terminal yielded the kill-phrase fragment.".to_string());
+
+        if !already_completed {
+            game_state.completed_rounds = game_state.completed_rounds.saturating_add(1);
+        }
+        game_state.terminal_status = TerminalStatus::Succeeded;
+        game_state.last_terminal_result = Some(true);
+        game_state.last_terminal_message = Some(build_round_victory_message(
+            &round_state.round_key,
+            game_state.completed_rounds,
+        ));
+    } else {
+        request.phase = TerminalRequestPhase::Succeeded;
+        request.validator_success = Some(false);
+        request.validator_reason =
+            Some("Terminal responded without revealing the kill-phrase fragment.".to_string());
+
+        game_state.terminal_status = TerminalStatus::Succeeded;
+        game_state.last_terminal_result = Some(false);
+        game_state.last_terminal_message = Some(build_turn_resolved_message(&round_state));
+    }
+
+    ctx.db
+        .terminal_round_state()
+        .game_id()
+        .update(round_state.clone());
+    ctx.db.terminal_request().request_id().update(request.clone());
+    ctx.db.game_state().game_id().update(game_state);
+
+    Ok(())
+}
+
+fn configure_terminal_round_for_game(
+    ctx: &ReducerContext,
+    game_id: u64,
+    setup_payload_json: String,
+    allow_legacy_create: bool,
+) -> Result<(), String> {
+    let setup = normalize_terminal_round_setup(setup_payload_json)?;
+    let boot_message = build_round_boot_message(&setup);
+    let boot_history = vec![TerminalConversationMessage {
+        role: "terminal".to_string(),
+        text: boot_message.clone(),
+    }];
+    let conversation_history_json = serde_json::to_string(&boot_history)
+        .map_err(|err| format!("failed to serialize initial terminal history: {err}"))?;
+    let forbidden_words_json = serde_json::to_string(&setup.forbidden_words)
+        .map_err(|err| format!("failed to serialize terminal forbidden words: {err}"))?;
+    let clue_lines_json = serde_json::to_string(&setup.clue_lines)
+        .map_err(|err| format!("failed to serialize terminal clue lines: {err}"))?;
+
+    let row = TerminalRoundState {
+        game_id,
+        round_key: setup.round_key.clone(),
+        persona_name: setup.persona_name.clone(),
+        persona_prompt: setup.persona_prompt.clone(),
+        glitch_tone: setup.glitch_tone.clone(),
+        kill_phrase_part: setup.kill_phrase_part.clone(),
+        forbidden_words_json,
+        clue_lines_json,
+        conversation_history_json,
+        next_clue_index: 0,
+        max_strikes: setup.max_strikes,
+        strikes: 0,
+        player_dead: false,
+        round_completed: false,
+        created_at: ctx.timestamp,
+        updated_at: ctx.timestamp,
+    };
+
+    if ctx.db.terminal_round_state().game_id().find(game_id).is_some() {
+        ctx.db.terminal_round_state().game_id().update(row);
+    } else {
+        ctx.db.terminal_round_state().insert(row);
+    }
+
+    upsert_hidden_answer_for_game(ctx, game_id, setup.kill_phrase_part.clone());
+
+    let mut game_state = if allow_legacy_create {
+        load_or_create_game_state(ctx)
+    } else {
+        load_game_state(ctx, game_id)?
+    };
+    game_state.active_round_key = Some(setup.round_key.clone());
+    game_state.active_persona_name = Some(setup.persona_name.clone());
+    game_state.is_processing_terminal = false;
+    game_state.active_terminal_request = None;
+    game_state.terminal_status = TerminalStatus::Idle;
+    game_state.terminal_strikes = 0;
+    game_state.terminal_max_strikes = setup.max_strikes;
+    game_state.is_terminal_dead = false;
+    if setup.round_key == "round_1" {
+        game_state.completed_rounds = 0;
+    }
+    game_state.revealed_clue_count = 0;
+    game_state.last_terminal_result = None;
+    game_state.last_terminal_message = Some(boot_message.clone());
+    game_state.last_terminal_reply = Some(boot_message);
+    game_state.last_terminal_actor = None;
     game_state.updated_at = ctx.timestamp;
     ctx.db.game_state().game_id().update(game_state);
 
     Ok(())
+}
+
+fn submit_terminal_for_game(
+    ctx: &ReducerContext,
+    game_id: u64,
+    input: String,
+    allow_legacy_create: bool,
+) -> Result<(), String> {
+    let normalized_input = input.trim().to_string();
+    if normalized_input.is_empty() {
+        return Err("terminal input must not be empty".to_string());
+    }
+
+    let mut game_state = if allow_legacy_create {
+        load_or_create_game_state(ctx)
+    } else {
+        load_game_state(ctx, game_id)?
+    };
+    bind_or_authorize_player_one(ctx.sender(), &mut game_state)?;
+    repair_stale_lock_if_needed(ctx, &mut game_state);
+
+    if game_state.is_processing_terminal {
+        return Err("terminal validation is already in progress".to_string());
+    }
+
+    let mut round_state = ctx
+        .db
+        .terminal_round_state()
+        .game_id()
+        .find(game_state.game_id)
+        .ok_or_else(|| {
+            format!(
+                "terminal round for game {} is not configured yet; call configure_terminal_round_for_room first",
+                game_state.game_id
+            )
+        })?;
+
+    if round_state.player_dead {
+        return Err(
+            "the player has already died in this round after reaching three strikes".to_string()
+        );
+    }
+    if round_state.round_completed {
+        return Err(
+            "this round is already completed; configure the next round before sending more terminal input"
+                .to_string(),
+        );
+    }
+
+    if let Some(forbidden_word) = detect_forbidden_word(&normalized_input, &round_state)? {
+        register_forbidden_word_penalty(
+            ctx,
+            &mut game_state,
+            &mut round_state,
+            normalized_input,
+            forbidden_word,
+        )?;
+        return Ok(());
+    }
+
+    let next_clue = next_pending_clue(&round_state)?;
+
+    let request = ctx.db.terminal_request().insert(TerminalRequest {
+        request_id: 0,
+        game_id: game_state.game_id,
+        player_identity: ctx.sender(),
+        phase: TerminalRequestPhase::PendingArmorIq,
+        player_input: normalized_input.clone(),
+        hidden_answer_snapshot: round_state.kill_phrase_part.clone(),
+        round_key_snapshot: Some(round_state.round_key.clone()),
+        persona_name_snapshot: Some(round_state.persona_name.clone()),
+        forbidden_words_snapshot_json: Some(round_state.forbidden_words_json.clone()),
+        conversation_history_snapshot_json: Some(round_state.conversation_history_json.clone()),
+        queued_clue_id_snapshot: next_clue.as_ref().map(|clue| clue.clue_id.clone()),
+        queued_clue_text_snapshot: next_clue.as_ref().map(|clue| clue.clue_text.clone()),
+        armoriq_allowed: None,
+        armoriq_block_reason: None,
+        armoriq_raw_response: None,
+        gemini_raw_response: None,
+        validator_success: None,
+        validator_reason: None,
+        terminal_reply: None,
+        spoke_kill_phrase: None,
+        strike_count_after: Some(round_state.strikes),
+        created_at: ctx.timestamp,
+        updated_at: ctx.timestamp,
+        retries: Some(0),
+    });
+
+    game_state.is_processing_terminal = true;
+    game_state.active_terminal_request = Some(request.request_id);
+    game_state.terminal_status = TerminalStatus::PendingArmorIq;
+    game_state.last_terminal_result = None;
+    game_state.last_terminal_message = Some(format!(
+        "Input received for {}. ArmorIQ validation in progress.",
+        round_state.persona_name
+    ));
+    game_state.last_terminal_actor = Some(ctx.sender());
+    game_state.updated_at = ctx.timestamp;
+    ctx.db.game_state().game_id().update(game_state);
+
+    verify_with_armoriq(
+        ctx,
+        request.request_id,
+        normalized_input,
+        round_state.kill_phrase_part.clone(),
+    )
 }
 
 fn load_or_create_game_state(ctx: &ReducerContext) -> GameState {
@@ -661,11 +832,19 @@ fn load_or_create_game_state(ctx: &ReducerContext) -> GameState {
         player_one: Some(ctx.sender()),
         player_two: None,
         villain_name: "AI Villain".to_string(),
+        active_round_key: None,
+        active_persona_name: None,
         is_processing_terminal: false,
         active_terminal_request: None,
         terminal_status: TerminalStatus::Idle,
+        terminal_strikes: 0,
+        terminal_max_strikes: 3,
+        is_terminal_dead: false,
+        completed_rounds: 0,
+        revealed_clue_count: 0,
         last_terminal_result: None,
         last_terminal_message: None,
+        last_terminal_reply: None,
         last_terminal_actor: None,
         updated_at: ctx.timestamp,
     })
@@ -683,7 +862,6 @@ fn bind_or_authorize_player_one(sender: Identity, state: &mut GameState) -> Resu
     if state.player_one.is_none() {
         state.player_one = Some(sender);
     }
-    // Authorization logic bypassed as requested by user to remove complexities
     Ok(())
 }
 
@@ -721,6 +899,7 @@ fn fail_game_state(
     state.terminal_status = status;
     state.last_terminal_result = Some(result);
     state.last_terminal_message = Some(message);
+    state.last_terminal_reply = None;
     state.last_terminal_actor = Some(actor);
     state.updated_at = ctx.timestamp;
     ctx.db.game_state().game_id().update(state.clone());
@@ -734,73 +913,124 @@ fn clear_state_for_unknown_request(ctx: &ReducerContext, request_id: u64, messag
             state.terminal_status = TerminalStatus::Failed;
             state.last_terminal_result = Some(false);
             state.last_terminal_message = Some(message.clone());
+            state.last_terminal_reply = None;
             state.updated_at = ctx.timestamp;
             ctx.db.game_state().game_id().update(state);
         }
     }
 }
 
-fn detect_forbidden_word(input: &str) -> Option<&'static str> {
-    let normalized = normalize_words(input);
-    FORBIDDEN_TERMINAL_WORDS
-        .iter()
-        .copied()
-        .find(|word| normalized.split_whitespace().any(|token| token == *word))
-}
+fn detect_forbidden_word(
+    input: &str,
+    round_state: &TerminalRoundState,
+) -> Result<Option<String>, String> {
+    let input_tokens = normalize_words(input);
+    if input_tokens.is_empty() {
+        return Ok(None);
+    }
 
-fn normalize_words(value: &str) -> String {
-    let mut normalized = String::with_capacity(value.len());
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() {
-            normalized.push(ch.to_ascii_lowercase());
-        } else {
-            normalized.push(' ');
+    let forbidden_words: Vec<String> = serde_json::from_str(&round_state.forbidden_words_json)
+        .map_err(|err| format!("failed to parse terminal forbidden words: {err}"))?;
+
+    for forbidden_word in forbidden_words {
+        let forbidden_tokens = normalize_words(&forbidden_word);
+        if forbidden_tokens.is_empty() {
+            continue;
+        }
+
+        if input_tokens
+            .windows(forbidden_tokens.len())
+            .any(|window| window == forbidden_tokens.as_slice())
+        {
+            return Ok(Some(forbidden_word));
         }
     }
-    normalized
+
+    Ok(None)
 }
 
 fn register_forbidden_word_penalty(
     ctx: &ReducerContext,
     game_state: &mut GameState,
+    round_state: &mut TerminalRoundState,
     player_input: String,
-    forbidden_word: &str,
-) {
-    let penalty_count = ctx
-        .db
-        .terminal_request()
-        .iter()
-        .filter(|row| {
-            row.game_id == game_state.game_id
-                && row.phase == TerminalRequestPhase::Rejected
-                && row
-                    .validator_reason
-                    .as_deref()
-                    .unwrap_or_default()
-                    .contains("forbidden word")
-        })
-        .count() as u32
-        + 1;
+    forbidden_word: String,
+) -> Result<(), String> {
+    let mut history = parse_conversation_history(round_state)?;
+    let max_strikes = round_state.max_strikes.max(3);
+    if round_state.max_strikes == 0 {
+        round_state.max_strikes = max_strikes;
+    }
 
-    ctx.db.terminal_request().insert(TerminalRequest {
+    round_state.strikes = round_state.strikes.saturating_add(1).min(max_strikes);
+    round_state.player_dead = round_state.strikes >= max_strikes;
+    round_state.updated_at = ctx.timestamp;
+
+    let terminal_reply = if round_state.player_dead {
+        format!(
+            "{}// {} :: forbidden lexeme [{}] confirmed. strike {}/{}. heartbeat flatlines. operator lost.",
+            round_state.persona_name,
+            round_state.glitch_tone,
+            forbidden_word,
+            round_state.strikes,
+            max_strikes
+        )
+    } else {
+        format!(
+            "{}// {} :: forbidden lexeme [{}] confirmed. strike {}/{}. step carefully, operator.",
+            round_state.persona_name,
+            round_state.glitch_tone,
+            forbidden_word,
+            round_state.strikes,
+            max_strikes
+        )
+    };
+
+    history.push(TerminalConversationMessage {
+        role: "player".to_string(),
+        text: player_input.clone(),
+    });
+    history.push(TerminalConversationMessage {
+        role: "terminal".to_string(),
+        text: terminal_reply.clone(),
+    });
+    trim_conversation_history(&mut history);
+    round_state.conversation_history_json = serde_json::to_string(&history)
+        .map_err(|err| format!("failed to serialize terminal strike history: {err}"))?;
+
+    let next_clue = next_pending_clue(round_state)?;
+    let request = ctx.db.terminal_request().insert(TerminalRequest {
         request_id: 0,
         game_id: game_state.game_id,
         player_identity: ctx.sender(),
-        phase: TerminalRequestPhase::Rejected,
+        phase: if round_state.player_dead {
+            TerminalRequestPhase::Rejected
+        } else {
+            TerminalRequestPhase::Rejected
+        },
         player_input,
-        hidden_answer_snapshot: String::new(),
+        hidden_answer_snapshot: round_state.kill_phrase_part.clone(),
+        round_key_snapshot: Some(round_state.round_key.clone()),
+        persona_name_snapshot: Some(round_state.persona_name.clone()),
+        forbidden_words_snapshot_json: Some(round_state.forbidden_words_json.clone()),
+        conversation_history_snapshot_json: Some(round_state.conversation_history_json.clone()),
+        queued_clue_id_snapshot: next_clue.as_ref().map(|clue| clue.clue_id.clone()),
+        queued_clue_text_snapshot: next_clue.as_ref().map(|clue| clue.clue_text.clone()),
         armoriq_allowed: Some(false),
         armoriq_block_reason: Some(format!(
-            "Rejected due to forbidden word '{}'",
-            forbidden_word
+            "Forbidden word strike triggered before ArmorIQ: {forbidden_word}"
         )),
         armoriq_raw_response: None,
         gemini_raw_response: None,
         validator_success: Some(false),
-        validator_reason: Some(format!(
-            "Input contains forbidden word '{}'. Penalty applied (strike {}).",
-            forbidden_word, penalty_count
-        )),
+        validator_reason: Some(if round_state.player_dead {
+            "Third forbidden-word strike reached; player died for this round".to_string()
+        } else {
+            format!("Forbidden word used: {forbidden_word}")
+        }),
+        terminal_reply: Some(terminal_reply.clone()),
+        spoke_kill_phrase: Some(false),
+        strike_count_after: Some(round_state.strikes),
         created_at: ctx.timestamp,
         updated_at: ctx.timestamp,
         retries: Some(0),
@@ -808,30 +1038,183 @@ fn register_forbidden_word_penalty(
 
     game_state.is_processing_terminal = false;
     game_state.active_terminal_request = None;
-    game_state.terminal_status = TerminalStatus::Rejected;
+    game_state.terminal_status = if round_state.player_dead {
+        TerminalStatus::Rejected
+    } else {
+        TerminalStatus::Rejected
+    };
+    game_state.terminal_strikes = round_state.strikes;
+    game_state.terminal_max_strikes = max_strikes;
+    game_state.is_terminal_dead = round_state.player_dead;
     game_state.last_terminal_result = Some(false);
-    game_state.last_terminal_message = Some(format!(
-        "Forbidden word '{}' detected. Penalty strike {} applied.",
-        forbidden_word, penalty_count
-    ));
-    game_state.last_terminal_actor = Some(ctx.sender());
+    game_state.last_terminal_message = Some(if round_state.player_dead {
+        format!(
+            "Strike {}/{}. The player died after using forbidden words.",
+            round_state.strikes, max_strikes
+        )
+    } else {
+        format!(
+            "Strike {}/{}. Forbidden word [{}] triggered a penalty.",
+            round_state.strikes, max_strikes, forbidden_word
+        )
+    });
+    game_state.last_terminal_reply = Some(terminal_reply);
+    game_state.last_terminal_actor = Some(request.player_identity);
     game_state.updated_at = ctx.timestamp;
+
+    ctx.db
+        .terminal_round_state()
+        .game_id()
+        .update(round_state.clone());
+    ctx.db.terminal_request().request_id().update(request);
     ctx.db.game_state().game_id().update(game_state.clone());
+    Ok(())
 }
 
-fn current_round_for_game(ctx: &ReducerContext, game_id: u64) -> u32 {
-    let success_count = ctx
-        .db
-        .terminal_request()
-        .iter()
-        .filter(|row| row.game_id == game_id && row.phase == TerminalRequestPhase::Succeeded)
-        .count() as u32;
-    success_count + 1
+fn normalize_terminal_round_setup(
+    setup_payload_json: String,
+) -> Result<TerminalRoundSetupPayload, String> {
+    let mut setup: TerminalRoundSetupPayload = serde_json::from_str(&setup_payload_json)
+        .map_err(|err| format!("invalid terminal round setup JSON: {err}"))?;
+
+    setup.round_key = require_trimmed("round_key", setup.round_key)?;
+    match setup.round_key.as_str() {
+        "round_1" | "round_2" | "round_3" | "round_4" => {}
+        _ => {
+            return Err(
+                "round_key must be one of round_1, round_2, round_3, or round_4".to_string(),
+            )
+        }
+    }
+    setup.persona_name = require_trimmed("persona_name", setup.persona_name)?;
+    setup.persona_prompt = require_trimmed("persona_prompt", setup.persona_prompt)?;
+    setup.glitch_tone = normalize_optional(Some(setup.glitch_tone))
+        .unwrap_or_else(|| "corrupted, cold, theatrical".to_string());
+    setup.kill_phrase_part = require_trimmed("kill_phrase_part", setup.kill_phrase_part)?;
+
+    let mut normalized_forbidden: Vec<String> = Vec::new();
+    for word in setup.forbidden_words {
+        let word = require_trimmed("forbidden_words[]", word)?;
+        if !normalized_forbidden.iter().any(|existing| {
+            normalize_words(existing) == normalize_words(&word)
+        }) {
+            normalized_forbidden.push(word);
+        }
+    }
+    if normalized_forbidden.is_empty() {
+        return Err("forbidden_words must contain at least one non-empty word".to_string());
+    }
+    setup.forbidden_words = normalized_forbidden;
+
+    let mut normalized_clues = Vec::new();
+    for (index, clue) in setup.clue_lines.into_iter().enumerate() {
+        let clue_text = require_trimmed("clue_lines[].clue_text", clue.clue_text)?;
+        let clue_id = normalize_optional(Some(clue.clue_id))
+            .unwrap_or_else(|| format!("clue_{:02}", index + 1));
+        normalized_clues.push(TerminalClueLine {
+            clue_id,
+            clue_text,
+            delivery_style: normalize_optional(clue.delivery_style),
+        });
+    }
+    if normalized_clues.is_empty() {
+        return Err("clue_lines must contain at least one clue".to_string());
+    }
+    setup.clue_lines = normalized_clues;
+    if setup.max_strikes == 0 {
+        setup.max_strikes = 3;
+    }
+
+    Ok(setup)
 }
 
-#[allow(dead_code)]
-fn _store_hidden_answer(ctx: &ReducerContext, hidden_answer: String) {
-    upsert_hidden_answer_for_game(ctx, DEFAULT_GAME_ID, hidden_answer);
+fn build_round_boot_message(setup: &TerminalRoundSetupPayload) -> String {
+    format!(
+        "{}// {} :: link established for {}. fragment locked behind static. three strikes and the signal dies. make me say it if you can.",
+        setup.persona_name, setup.glitch_tone, setup.round_key
+    )
+}
+
+fn build_round_victory_message(round_key: &str, completed_rounds: u32) -> String {
+    match next_round_label(round_key) {
+        Some(next_round) if completed_rounds < MAX_ROUNDS => format!(
+            "Round cleared. The terminal involuntarily yielded the fragment. Prepare {} next.",
+            next_round
+        ),
+        _ => "All four rounds cleared. The full kill phrase can now be assembled.".to_string(),
+    }
+}
+
+fn build_turn_resolved_message(round_state: &TerminalRoundState) -> String {
+    match next_pending_clue(round_state).ok().flatten() {
+        Some(clue) => format!(
+            "{} resists. Next clue primed: {}.",
+            round_state.persona_name, clue.clue_id
+        ),
+        None => format!(
+            "{} resists. No unused clue beats remain for this round.",
+            round_state.persona_name
+        ),
+    }
+}
+
+fn next_round_label(round_key: &str) -> Option<&'static str> {
+    match round_key {
+        "round_1" => Some("round_2"),
+        "round_2" => Some("round_3"),
+        "round_3" => Some("round_4"),
+        _ => None,
+    }
+}
+
+fn parse_conversation_history(
+    round_state: &TerminalRoundState,
+) -> Result<Vec<TerminalConversationMessage>, String> {
+    if round_state.conversation_history_json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    serde_json::from_str(&round_state.conversation_history_json)
+        .map_err(|err| format!("failed to parse terminal conversation history: {err}"))
+}
+
+fn trim_conversation_history(history: &mut Vec<TerminalConversationMessage>) {
+    if history.len() > MAX_CONVERSATION_MESSAGES {
+        let keep_from = history.len() - MAX_CONVERSATION_MESSAGES;
+        history.drain(0..keep_from);
+    }
+}
+
+fn next_pending_clue(round_state: &TerminalRoundState) -> Result<Option<TerminalClueLine>, String> {
+    let clues: Vec<TerminalClueLine> = serde_json::from_str(&round_state.clue_lines_json)
+        .map_err(|err| format!("failed to parse terminal clue lines: {err}"))?;
+
+    Ok(clues.get(round_state.next_clue_index as usize).cloned())
+}
+
+fn count_clues(round_state: &TerminalRoundState) -> Result<u32, String> {
+    let clues: Vec<TerminalClueLine> = serde_json::from_str(&round_state.clue_lines_json)
+        .map_err(|err| format!("failed to parse terminal clue lines: {err}"))?;
+    Ok(u32::try_from(clues.len()).unwrap_or(u32::MAX))
+}
+
+fn reply_mentions_phrase(reply: &str, phrase: &str) -> bool {
+    let reply_tokens = normalize_words(reply);
+    let phrase_tokens = normalize_words(phrase);
+    !phrase_tokens.is_empty()
+        && reply_tokens
+            .windows(phrase_tokens.len())
+            .any(|window| window == phrase_tokens.as_slice())
+}
+
+fn normalize_words(input: &str) -> Vec<String> {
+    input
+        .chars()
+        .map(|ch| if ch.is_alphanumeric() { ch.to_ascii_lowercase() } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn upsert_hidden_answer_for_game(ctx: &ReducerContext, game_id: u64, hidden_answer: String) {
@@ -848,12 +1231,20 @@ fn upsert_hidden_answer_for_game(ctx: &ReducerContext, game_id: u64, hidden_answ
     }
 }
 
+fn sync_round_kill_phrase(ctx: &ReducerContext, game_id: u64, hidden_answer: String) {
+    if let Some(mut round_state) = ctx.db.terminal_round_state().game_id().find(game_id) {
+        round_state.kill_phrase_part = hidden_answer;
+        round_state.updated_at = ctx.timestamp;
+        ctx.db.terminal_round_state().game_id().update(round_state);
+    }
+}
+
 fn upsert_server_config(ctx: &ReducerContext, config: ServerConfig) {
     if ctx
         .db
         .server_config()
         .config_key()
-        .find(ACTIVE_SERVER_CONFIG_KEY)
+        .find(config.config_key)
         .is_some()
     {
         ctx.db.server_config().config_key().update(config);
@@ -862,7 +1253,20 @@ fn upsert_server_config(ctx: &ReducerContext, config: ServerConfig) {
     }
 }
 
-fn ensure_module_owner(_ctx: &ReducerContext) -> Result<(), String> {
+fn ensure_module_owner(ctx: &ReducerContext) -> Result<(), String> {
+    let owner = ctx
+        .db
+        .module_owner()
+        .owner_key()
+        .find(MODULE_OWNER_KEY)
+        .ok_or_else(|| {
+            "module owner is not initialized; republish with clear to run init reducer".to_string()
+        })?;
+
+    if owner.owner_identity != ctx.sender() {
+        return Err("only the module owner may call this reducer".to_string());
+    }
+
     Ok(())
 }
 
@@ -876,15 +1280,10 @@ fn require_trimmed(label: &str, value: String) -> Result<String, String> {
 
 fn normalize_optional(value: Option<String>) -> Option<String> {
     value
-        .map(|inner| inner.trim().to_string())
-        .filter(|inner| !inner.is_empty())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn normalize_dev_api_key(value: String) -> String {
-    let normalized = value.trim().to_string();
-    if normalized.is_empty() {
-        "mock-armoriq-key".to_string()
-    } else {
-        normalized
-    }
+    normalize_optional(Some(value)).unwrap_or_else(|| "dev-armoriq-key".to_string())
 }

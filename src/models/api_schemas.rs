@@ -39,6 +39,47 @@ pub struct GeminiValidatorDecision {
     pub reason: String,
 }
 
+/// A single clue line that the glitching terminal can drip-feed during a round.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalClueLine {
+    pub clue_id: String,
+    pub clue_text: String,
+    #[serde(default)]
+    pub delivery_style: Option<String>,
+}
+
+/// Round configuration supplied before a terminal round begins.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalRoundSetupPayload {
+    pub round_key: String,
+    pub persona_name: String,
+    pub persona_prompt: String,
+    pub glitch_tone: String,
+    pub kill_phrase_part: String,
+    pub forbidden_words: Vec<String>,
+    pub clue_lines: Vec<TerminalClueLine>,
+    #[serde(default = "default_terminal_max_strikes")]
+    pub max_strikes: u32,
+}
+
+/// Minimal conversation history item persisted for the terminal persona.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalConversationMessage {
+    pub role: String,
+    pub text: String,
+}
+
+/// Structured Gemini response for a single terminal persona turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeminiTerminalTurnResponse {
+    pub terminal_reply: String,
+    pub spoke_kill_phrase: bool,
+}
+
+fn default_terminal_max_strikes() -> u32 {
+    3
+}
+
 /// Local relay request contract for clue generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayClueGeneratorRequest {
