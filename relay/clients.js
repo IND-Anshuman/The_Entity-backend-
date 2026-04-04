@@ -40,7 +40,11 @@ function buildMockClueResponse(input = {}) {
     persona_name: requestedPersona,
     persona_paragraphs: mockProfile.persona_paragraphs,
     target_word: mockProfile.target_word,
-    forbidden_words: mockProfile.forbidden_words
+    forbidden_words: mockProfile.forbidden_words,
+    clues: mockProfile.clues,
+    manual: mockProfile.manual,
+    decoder_walkthrough: mockProfile.decoder_walkthrough,
+    solution: mockProfile.solution
   };
 }
 
@@ -401,7 +405,14 @@ function buildRoundOneMockProfile(requestedPersona) {
         "The city speaks in cigarette ash and rainwater, and every decent lie leaves a stain if you know where to look. I make my living in the narrow gap between what people swear happened and what the room itself is too tired to hide.",
         "My trade is patience sharpened into instinct. I trust scuffed floors, unpaid debts, and the way a frightened witness grips a glass too tightly. By dawn, I usually know which pocket held the truth long before anyone admits it.",
         "You will know me by the habit of circling the smallest inconsistency until it cracks open the whole night. I do not need a confession to begin; I only need the paper trail that everyone forgets to fear."
-      ]
+      ],
+      clues: buildRoundOneMockClues(),
+      manual: buildRoundOneMockManual(),
+      decoder_walkthrough: buildRoundOneMockWalkthrough(),
+      solution: {
+        final_identity_guess: "1920s Detective",
+        final_target_word_inference: "ledger"
+      }
     };
   }
 
@@ -413,7 +424,14 @@ function buildRoundOneMockProfile(requestedPersona) {
         "Salt, thunder, and mutiny are better tutors than any courtly school. I trust the horizon more than any promise spoken on dry land, because the sea has a habit of stripping the truth down to nerve and hunger.",
         "A crew will follow strength until the wind turns mean, and then they look for omens in every loose rope and blackening cloud. I answer with laughter, discipline, and the certainty that fear is only useful when someone else feels it first.",
         "You could know me by the way I talk about plunder as if it were destiny and danger as if it were weather. I was built for pursuit, command, and the hard gleam of survival when mercy sinks below the tide."
-      ]
+      ],
+      clues: buildRoundOneMockClues(),
+      manual: buildRoundOneMockManual(),
+      decoder_walkthrough: buildRoundOneMockWalkthrough(),
+      solution: {
+        final_identity_guess: "Pirate Captain",
+        final_target_word_inference: "cutlass"
+      }
     };
   }
 
@@ -424,8 +442,198 @@ function buildRoundOneMockProfile(requestedPersona) {
       "I speak as someone who has handled too many sacred things with bare hands and come away unchanged only in appearance. History, to me, is never dead. It waits in dust, in ceremony, and in the silence people mistake for safety.",
       "My instincts are built from old doctrines, careful observation, and the knowledge that every object survives because someone feared destroying it. I look for significance in wear patterns, omissions, and the stories that power teaches people to whisper.",
       "If you are trying to place me, listen for reverence sharpened into obsession. I belong wherever memory is guarded, catalogued, stolen, or awakened."
+    ],
+    clues: buildRoundOneMockClues(),
+    manual: buildRoundOneMockManual(),
+    decoder_walkthrough: buildRoundOneMockWalkthrough(),
+    solution: {
+      final_identity_guess: "Archivist",
+      final_target_word_inference: "relic"
+    }
+  };
+}
+
+function buildRoundOneMockClues() {
+  return [
+    {
+      clue_id: "c1",
+      clue_type: "linguistic",
+      clue_text: "The speaker distrusts testimony unless it aligns with a numbered city index and tobacco timings.",
+      required_manual_refs: ["cx_02", "tl_03"],
+      expected_inference: "Evidence weighting over confessional speech",
+      difficulty: "hard"
+    },
+    {
+      clue_id: "c2",
+      clue_type: "timeline",
+      clue_text: "Three events are out of order; only the post-rain street log can anchor sequence.",
+      required_manual_refs: ["tl_05", "pm_04"],
+      expected_inference: "Reconstruct chronology from reliability and protocol priority",
+      difficulty: "expert"
+    },
+    {
+      clue_id: "c3",
+      clue_type: "cross_reference",
+      clue_text: "The key noun is implied where debt language intersects chain-of-custody notation.",
+      required_manual_refs: ["cx_08", "pm_09"],
+      expected_inference: "Target concept belongs to tracked transactional evidence",
+      difficulty: "expert"
+    },
+    {
+      clue_id: "c4",
+      clue_type: "symbolic",
+      clue_text: "A split-circle mark means compare witness channel A against archived margin script.",
+      required_manual_refs: ["lg_02", "cx_11"],
+      expected_inference: "Use cipher legend to reinterpret witness terminology",
+      difficulty: "hard"
+    },
+    {
+      clue_id: "c5",
+      clue_type: "behavioral",
+      clue_text: "The voice profile rewards procedural caution and penalizes rhetorical certainty.",
+      required_manual_refs: ["pm_02", "pm_07"],
+      expected_inference: "Persona follows investigative protocol, not forceful accusation",
+      difficulty: "medium"
+    },
+    {
+      clue_id: "c6",
+      clue_type: "timeline",
+      clue_text: "Ignore any fragment tagged lantern-red unless corroborated by two independent channels.",
+      required_manual_refs: ["tl_09", "fl_01"],
+      expected_inference: "Discard seductive but unreliable branch",
+      difficulty: "hard"
+    },
+    {
+      clue_id: "c7",
+      clue_type: "cross_reference",
+      clue_text: "The hidden noun appears in absentia: it is never spoken in high-trust interviews but drives all reconciliation.",
+      required_manual_refs: ["tl_12", "cx_14", "pm_12"],
+      expected_inference: "Infer omitted core object from reconciliation pattern",
+      difficulty: "expert"
+    },
+    {
+      clue_id: "c8",
+      clue_type: "linguistic",
+      clue_text: "When the speaker contrasts rain and ink, decode by the index that maps weather to archive actions.",
+      required_manual_refs: ["lg_05", "pm_10"],
+      expected_inference: "Convert metaphor into procedural archive step",
+      difficulty: "hard"
+    }
+  ];
+}
+
+function buildRoundOneMockManual() {
+  return {
+    codex_entries: buildRecordList("cx", 14, "Case codex entry"),
+    timeline_fragments: buildTimelineList("tl", 10),
+    cipher_legend: buildCipherList("lg", 8),
+    protocol_matrix: buildProtocolList("pm", 10),
+    false_leads: [
+      {
+        lead_id: "fl_01",
+        misleading_claim: "Lantern-red tags always indicate authentic witness memory.",
+        why_it_looks_valid: "The most dramatic fragments are lantern-red and emotionally consistent.",
+        why_it_is_wrong: "Legend notes lantern-red as contamination-prone unless dual corroborated."
+      },
+      {
+        lead_id: "fl_02",
+        misleading_claim: "Any direct accusation collapses uncertainty faster.",
+        why_it_looks_valid: "Aggressive language appears to force shorter responses.",
+        why_it_is_wrong: "Protocol matrix marks coercive questioning as entropy-increasing."
+      },
+      {
+        lead_id: "fl_03",
+        misleading_claim: "Temporal mismatch implies forged records only.",
+        why_it_looks_valid: "Out-of-order logs resemble tampering patterns.",
+        why_it_is_wrong: "Timeline appendix documents delayed municipal syncing artifacts."
+      }
     ]
   };
+}
+
+function buildRoundOneMockWalkthrough() {
+  return [
+    {
+      step_id: "w1",
+      clue_id: "c1",
+      manual_refs_used: ["cx_02", "tl_03"],
+      deduction: "Cross-link vocabulary frequency with rain-index timing to identify investigative persona bias."
+    },
+    {
+      step_id: "w2",
+      clue_id: "c2",
+      manual_refs_used: ["tl_05", "pm_04"],
+      deduction: "Use protocol precedence to reorder contested events and eliminate false chronology."
+    },
+    {
+      step_id: "w3",
+      clue_id: "c3",
+      manual_refs_used: ["cx_08", "pm_09"],
+      deduction: "Derive core hidden object by intersecting debt terms and custody process markers."
+    },
+    {
+      step_id: "w4",
+      clue_id: "c4",
+      manual_refs_used: ["lg_02", "cx_11"],
+      deduction: "Apply split-circle decoding rule to reinterpret testimony wording."
+    },
+    {
+      step_id: "w5",
+      clue_id: "c7",
+      manual_refs_used: ["tl_12", "cx_14", "pm_12"],
+      deduction: "Infer omitted target noun from high-trust omission pattern and reconciliation records."
+    }
+  ];
+}
+
+function buildRecordList(prefix, count, label) {
+  return Array.from({ length: count }, (_, idx) => {
+    const id = `${prefix}_${String(idx + 1).padStart(2, "0")}`;
+    return {
+      entry_id: id,
+      domain: idx % 2 === 0 ? "forensic_language" : "urban_intelligence",
+      term: `${label} ${idx + 1}`,
+      description: `Extended annotation ${idx + 1} describing contextual dependencies, edge cases, and filtering rules for inference chains.`,
+      relevance_tags: ["inference", idx % 2 === 0 ? "trace" : "testimony"]
+    };
+  });
+}
+
+function buildTimelineList(prefix, count) {
+  return Array.from({ length: count }, (_, idx) => {
+    const id = `${prefix}_${String(idx + 1).padStart(2, "0")}`;
+    return {
+      fragment_id: id,
+      timestamp_hint: `night_cycle_${idx + 1}`,
+      event_summary: `Fragment ${idx + 1} documents conflicting witness timing with municipal drift artifacts and post-rain indexing.`,
+      reliability: idx % 3 === 0 ? "high" : idx % 3 === 1 ? "medium" : "low",
+      linked_entities: ["operator_a", `sector_${(idx % 4) + 1}`]
+    };
+  });
+}
+
+function buildCipherList(prefix, count) {
+  return Array.from({ length: count }, (_, idx) => {
+    const id = `${prefix}_${String(idx + 1).padStart(2, "0")}`;
+    return {
+      cipher_id: id,
+      symbol_or_pattern: `pattern_${idx + 1}`,
+      decoding_rule: `Translate motif ${idx + 1} into procedural state transitions before semantic interpretation.`,
+      example: `Example ${idx + 1}: symbol cluster re-maps from emotional tone to archive process stage.`
+    };
+  });
+}
+
+function buildProtocolList(prefix, count) {
+  return Array.from({ length: count }, (_, idx) => {
+    const id = `${prefix}_${String(idx + 1).padStart(2, "0")}`;
+    return {
+      protocol_id: id,
+      trigger_condition: `When channel_${(idx % 3) + 1} confidence drops below threshold_${(idx % 5) + 1}`,
+      prescribed_action: `Apply verification pass ${(idx % 4) + 1} and postpone hard conclusion until reconciliation.` ,
+      hidden_implication: `This row implies evidence hierarchy ${idx + 1} that can invert naive clue readings.`
+    };
+  });
 }
 
 module.exports = {

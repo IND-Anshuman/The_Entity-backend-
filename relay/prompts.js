@@ -20,6 +20,19 @@ forbidden_words: List exactly 5 words that are the most obvious clues or synonym
 
 persona_paragraphs: Write 2 to 3 paragraphs written in the distinct voice of this persona. The primary goal of these paragraphs is to act as a riddle so Player 1 can deduce WHO is speaking.
 
+clues: Generate 8 complex clues, each of which requires one or more decoder references from the manual. Every clue must include clue_id, clue_text, clue_type, required_manual_refs, and expected_inference.
+
+manual: Generate a large, data-dense manual with structured sections used to decode clues:
+- codex_entries: 14 to 20 records
+- timeline_fragments: 10 to 14 records
+- cipher_legend: 8 to 12 records
+- protocol_matrix: 10 to 16 records
+- false_leads: 3 to 5 records explicitly marked deceptive
+
+decoder_walkthrough: Explain clue-to-manual mapping for at least 5 clues. Each step must reference concrete clue_ids and manual record ids.
+
+solution: Return final_identity_guess and final_target_word_inference.
+
 ABSOLUTE CONSTRAINTS:
 
 DO NOT use the persona_name (or any direct aliases) in the paragraphs.
@@ -29,6 +42,10 @@ DO NOT use the target_word anywhere in the paragraphs.
 DO NOT use ANY of the 5 forbidden_words anywhere in the paragraphs.
 
 Make the persona's identity guessable through their tone, philosophy, and subtle lore hints.
+
+The clues must be multi-hop and non-trivial. At least half must require combining information from 2 or more manual sections.
+
+The manual must contain enough irrelevant but plausible data so decoding requires careful filtering.
 `.trim();
 
 const ROUND_1_CHAT_SYSTEM_PROMPT_TEMPLATE = `
@@ -55,6 +72,126 @@ const ROUND_3_SETUP_PROMPT_TEMPLATE = null;
 const ROUND_3_CHAT_SYSTEM_PROMPT_TEMPLATE = null;
 const ROUND_4_SETUP_PROMPT_TEMPLATE = null;
 const ROUND_4_CHAT_SYSTEM_PROMPT_TEMPLATE = null;
+
+const roundOneClueSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    clue_id: { type: "string" },
+    clue_type: {
+      type: "string",
+      enum: ["linguistic", "timeline", "symbolic", "behavioral", "cross_reference"]
+    },
+    clue_text: { type: "string" },
+    required_manual_refs: {
+      type: "array",
+      minItems: 1,
+      items: { type: "string" }
+    },
+    expected_inference: { type: "string" },
+    difficulty: {
+      type: "string",
+      enum: ["medium", "hard", "expert"]
+    }
+  },
+  required: [
+    "clue_id",
+    "clue_type",
+    "clue_text",
+    "required_manual_refs",
+    "expected_inference",
+    "difficulty"
+  ]
+};
+
+const roundOneCodexEntrySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    entry_id: { type: "string" },
+    domain: { type: "string" },
+    term: { type: "string" },
+    description: { type: "string" },
+    relevance_tags: {
+      type: "array",
+      minItems: 1,
+      items: { type: "string" }
+    }
+  },
+  required: ["entry_id", "domain", "term", "description", "relevance_tags"]
+};
+
+const roundOneTimelineFragmentSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    fragment_id: { type: "string" },
+    timestamp_hint: { type: "string" },
+    event_summary: { type: "string" },
+    reliability: {
+      type: "string",
+      enum: ["high", "medium", "low"]
+    },
+    linked_entities: {
+      type: "array",
+      minItems: 1,
+      items: { type: "string" }
+    }
+  },
+  required: ["fragment_id", "timestamp_hint", "event_summary", "reliability", "linked_entities"]
+};
+
+const roundOneCipherLegendSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    cipher_id: { type: "string" },
+    symbol_or_pattern: { type: "string" },
+    decoding_rule: { type: "string" },
+    example: { type: "string" }
+  },
+  required: ["cipher_id", "symbol_or_pattern", "decoding_rule", "example"]
+};
+
+const roundOneProtocolRowSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    protocol_id: { type: "string" },
+    trigger_condition: { type: "string" },
+    prescribed_action: { type: "string" },
+    hidden_implication: { type: "string" }
+  },
+  required: ["protocol_id", "trigger_condition", "prescribed_action", "hidden_implication"]
+};
+
+const roundOneFalseLeadSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    lead_id: { type: "string" },
+    misleading_claim: { type: "string" },
+    why_it_looks_valid: { type: "string" },
+    why_it_is_wrong: { type: "string" }
+  },
+  required: ["lead_id", "misleading_claim", "why_it_looks_valid", "why_it_is_wrong"]
+};
+
+const roundOneWalkthroughStepSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    step_id: { type: "string" },
+    clue_id: { type: "string" },
+    manual_refs_used: {
+      type: "array",
+      minItems: 1,
+      items: { type: "string" }
+    },
+    deduction: { type: "string" }
+  },
+  required: ["step_id", "clue_id", "manual_refs_used", "deduction"]
+};
 
 const roundOneManualSchema = {
   type: "object",
@@ -85,9 +222,81 @@ const roundOneManualSchema = {
       items: {
         type: "string"
       }
+    },
+    clues: {
+      type: "array",
+      minItems: 8,
+      maxItems: 8,
+      items: roundOneClueSchema
+    },
+    manual: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        codex_entries: {
+          type: "array",
+          minItems: 14,
+          maxItems: 20,
+          items: roundOneCodexEntrySchema
+        },
+        timeline_fragments: {
+          type: "array",
+          minItems: 10,
+          maxItems: 14,
+          items: roundOneTimelineFragmentSchema
+        },
+        cipher_legend: {
+          type: "array",
+          minItems: 8,
+          maxItems: 12,
+          items: roundOneCipherLegendSchema
+        },
+        protocol_matrix: {
+          type: "array",
+          minItems: 10,
+          maxItems: 16,
+          items: roundOneProtocolRowSchema
+        },
+        false_leads: {
+          type: "array",
+          minItems: 3,
+          maxItems: 5,
+          items: roundOneFalseLeadSchema
+        }
+      },
+      required: [
+        "codex_entries",
+        "timeline_fragments",
+        "cipher_legend",
+        "protocol_matrix",
+        "false_leads"
+      ]
+    },
+    decoder_walkthrough: {
+      type: "array",
+      minItems: 5,
+      items: roundOneWalkthroughStepSchema
+    },
+    solution: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        final_identity_guess: { type: "string" },
+        final_target_word_inference: { type: "string" }
+      },
+      required: ["final_identity_guess", "final_target_word_inference"]
     }
   },
-  required: ["persona_name", "persona_paragraphs", "target_word", "forbidden_words"]
+  required: [
+    "persona_name",
+    "persona_paragraphs",
+    "target_word",
+    "forbidden_words",
+    "clues",
+    "manual",
+    "decoder_walkthrough",
+    "solution"
+  ]
 };
 
 const terminalValidatorSchema = {
@@ -130,8 +339,8 @@ const villainSpeechSchema = {
 const clueRoundConfigs = {
   [ROUND_1_KEY]: {
     responseSchema: roundOneManualSchema,
-    temperature: 0.9,
-    maxOutputTokens: 1400
+    temperature: 0.95,
+    maxOutputTokens: 3600
   },
   [ROUND_2_KEY]: null,
   [ROUND_3_KEY]: null,
@@ -163,7 +372,11 @@ function buildRoundOneClueGeneratorPrompt(input = {}) {
     "6. persona_paragraphs must contain 2 or 3 full paragraphs, each written in the persona's distinct voice.",
     "7. The paragraphs must make the identity guessable through tone, philosophy, methods, worldview, and indirect lore.",
     "8. The paragraphs must not contain the persona name, direct aliases, the target_word, or any forbidden_words.",
-    "9. Avoid bullet points inside the JSON fields. Write polished prose.",
+    "9. clues must have 8 entries and each clue must cite required_manual_refs that exist in manual sections.",
+    "10. manual must be dense and structured: codex_entries, timeline_fragments, cipher_legend, protocol_matrix, false_leads.",
+    "11. At least 4 clues must require cross-section decoding (2+ manual sections).",
+    "12. decoder_walkthrough must explicitly map clue_id to manual_refs_used and deduction steps.",
+    "13. Avoid bullet points inside prose JSON fields. Write polished, specific, non-generic text.",
     "",
     `Requested Persona: ${requestedPersona}`,
     "",

@@ -94,6 +94,22 @@ test("clue generator endpoint returns the required JSON contract", async () => {
   assert.equal(typeof body.target_word, "string");
   assert.ok(Array.isArray(body.forbidden_words));
   assert.equal(body.forbidden_words.length, 5);
+  assert.ok(Array.isArray(body.clues));
+  assert.equal(body.clues.length, 8);
+  assert.ok(Array.isArray(body.manual.codex_entries));
+  assert.ok(body.manual.codex_entries.length >= 14);
+  assert.ok(Array.isArray(body.manual.timeline_fragments));
+  assert.ok(body.manual.timeline_fragments.length >= 10);
+  assert.ok(Array.isArray(body.manual.cipher_legend));
+  assert.ok(body.manual.cipher_legend.length >= 8);
+  assert.ok(Array.isArray(body.manual.protocol_matrix));
+  assert.ok(body.manual.protocol_matrix.length >= 10);
+  assert.ok(Array.isArray(body.manual.false_leads));
+  assert.ok(body.manual.false_leads.length >= 3);
+  assert.ok(Array.isArray(body.decoder_walkthrough));
+  assert.ok(body.decoder_walkthrough.length >= 5);
+  assert.equal(typeof body.solution.final_identity_guess, "string");
+  assert.equal(typeof body.solution.final_target_word_inference, "string");
 });
 
 test("clue generator returns not implemented for later rounds until configured", async () => {

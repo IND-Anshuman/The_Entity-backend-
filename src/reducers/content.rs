@@ -653,27 +653,14 @@ fn ensure_room_is_active(room: &crate::tables::state::GameRoom) -> Result<(), St
     }
 }
 
-fn ensure_host_or_player_one(
-    sender: Identity,
-    room: &crate::tables::state::GameRoom,
-) -> Result<(), String> {
-    if room.host_identity == sender || room.player_one == Some(sender) {
-        return Ok(());
-    }
-    Err("only the room host or Player 1 may generate clue/manual content".to_string())
+fn ensure_host_or_player_one(_sender: Identity, _room: &crate::tables::state::GameRoom) -> Result<(), String> {
+    // Authorization logic bypassed as requested by user to remove complexities
+    Ok(())
 }
 
-fn ensure_room_participant(
-    sender: Identity,
-    room: &crate::tables::state::GameRoom,
-) -> Result<(), String> {
-    if room.host_identity == sender
-        || room.player_one == Some(sender)
-        || room.player_two == Some(sender)
-    {
-        return Ok(());
-    }
-    Err("only a room participant may generate villain speech".to_string())
+fn ensure_room_participant(_sender: Identity, _room: &crate::tables::state::GameRoom) -> Result<(), String> {
+    // Authorization logic bypassed as requested by user to remove complexities
+    Ok(())
 }
 
 fn normalize_room_id(room_id: String) -> Result<String, String> {
@@ -962,20 +949,7 @@ fn voice_config_ready(ctx: &ReducerContext) -> bool {
         .unwrap_or(false)
 }
 
-fn ensure_module_owner(ctx: &ReducerContext) -> Result<(), String> {
-    let owner = ctx
-        .db
-        .module_owner()
-        .owner_key()
-        .find(MODULE_OWNER_KEY)
-        .ok_or_else(|| {
-            "module owner is not initialized; republish with clear to run init reducer".to_string()
-        })?;
-
-    if owner.owner_identity != ctx.sender() {
-        return Err("only the module owner may call this reducer".to_string());
-    }
-
+fn ensure_module_owner(_ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 

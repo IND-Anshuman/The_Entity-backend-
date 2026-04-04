@@ -1,4 +1,4 @@
-use spacetimedb::{Identity, ReducerContext, Table};
+use spacetimedb::{Identity, ProcedureContext, ReducerContext, SpacetimeType, Table};
 
 use crate::tables::state::{
     game_room, game_secret, game_state, room_sequence, room_ticket, GameRoom, GameSecret,
@@ -146,6 +146,71 @@ pub fn terminate_room(ctx: &ReducerContext, room_id: String) -> Result<(), Strin
     Ok(())
 }
 
+/// Testing-focused room termination path that skips host-only checks.
+///
+/// This reducer keeps the same room shutdown behavior as `terminate_room`, but it allows
+/// any caller to terminate the room, which is useful for simple integration tests.
+#[spacetimedb::reducer]
+pub fn terminate_room_for_testing(ctx: &ReducerContext, room_id: String) -> Result<(), String> {
+    let normalized_room_id = normalize_room_id(room_id)?;
+    let mut room = load_room(ctx, &normalized_room_id)?;
+
+    if room.status == RoomStatus::Terminated {
+        return Ok(());
+    }
+
+    room.status = RoomStatus::Terminated;
+    room.updated_at = ctx.timestamp;
+    room.terminated_at = Some(ctx.timestamp);
+    ctx.db.game_room().room_id().update(room.clone());
+
+    let mut game_state = load_game_state(ctx, room.game_id)?;
+    game_state.is_processing_terminal = false;
+    game_state.active_terminal_request = None;
+    game_state.last_terminal_result = Some(false);
+    game_state.last_terminal_message = Some("Room terminated in testing mode".to_string());
+    game_state.last_terminal_actor = Some(ctx.sender());
+    game_state.terminal_status = TerminalStatus::Failed;
+    game_state.updated_at = ctx.timestamp;
+    ctx.db.game_state().game_id().update(game_state);
+
+    upsert_room_ticket(
+        ctx,
+        ctx.sender(),
+        Some(room.room_id),
+        Some(RoomStatus::Terminated),
+    );
+    Ok(())
+}
+
+/// Result object returned by `get_my_room_info`.
+#[derive(Debug, Clone, SpacetimeType)]
+pub struct MyRoomInfo {
+    pub room_id: Option<String>,
+    pub room_status: Option<RoomStatus>,
+}
+
+/// Procedure helper that returns the caller's room mapping without SQL.
+///
+/// Postman can call this via `/call/get_my_room_info` with the caller token to get a stable
+/// `room_id` and status directly from `room_ticket`.
+#[spacetimedb::procedure]
+pub fn get_my_room_info(ctx: &mut ProcedureContext) -> MyRoomInfo {
+    ctx.with_tx(|tx| {
+        if let Some(ticket) = tx.db.room_ticket().owner_identity().find(ctx.sender()) {
+            return MyRoomInfo {
+                room_id: ticket.room_id,
+                room_status: ticket.room_status,
+            };
+        }
+
+        MyRoomInfo {
+            room_id: None,
+            room_status: None,
+        }
+    })
+}
+
 /// Resolves a room id to its room row, returning a descriptive error when the room is unknown.
 pub fn load_room(ctx: &ReducerContext, room_id: &str) -> Result<GameRoom, String> {
     ctx.db
@@ -230,4 +295,20 @@ fn upsert_room_ticket(
 #[allow(dead_code)]
 fn _same_identity(left: Option<Identity>, right: Identity) -> bool {
     left == Some(right)
+}
+
+/// A convenience reducer for clients to "ping" their own room ticket.
+///
+/// Because SpaceTimeDB handles connections amorphously, finding a client's own
+/// room ID can involve messy SQL parsing to match `spacetime-identity`. 
+/// By calling this reducer, the backend simply refreshes the `updated_at` timestamp 
+/// on the caller's room ticket. The client SDK's `room_ticket::on_update` callback 
+/// will immediately fire with the exact ticket, yielding the `room_id` cleanly.
+#[spacetimedb::reducer]
+pub fn ping_room_ticket(ctx: &ReducerContext) -> Result<(), String> {
+    if let Some(mut ticket) = ctx.db.room_ticket().owner_identity().find(ctx.sender()) {
+        ticket.updated_at = ctx.timestamp;
+        ctx.db.room_ticket().owner_identity().update(ticket);
+    }
+    Ok(())
 }

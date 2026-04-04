@@ -1,0 +1,67 @@
+﻿
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+   SpaceTimeDB Backend ΓÇô Full Integration Test
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+
+  Γä╣  Owner token provided ΓÇô admin setup steps will run.
+
+Γæá Initiate Room (creates room + assigns Player 1)
+  Γ£ô [200] Room created, player1 token captured
+
+Γæí Discover Room ID (from room_ticket table)
+  Γ£ô room_id = AAAAAC
+
+Γæó Join Room (anonymous Player 2)
+  Γ£ô [200] Player 2 joined, token captured
+
+Γæú Verify Room Status
+  Γ£ô Room AAAAAC ΓåÆ status: Ready
+
+Γæñ Admin Setup
+  ΓåÆ configure_integrations (Relay direct)
+  Γ£ô [200] /call/configure_integrations
+  ΓåÆ set_hidden_answer_for_room
+  Γ£ô [200] /call/set_hidden_answer_for_room
+
+ΓæÑ Generate Clue Manual (round_1)
+  Γ£ô [200] /call/generate_clue_manual_for_room
+
+Γæª Generate Villain Speech
+  Γ£ô [200] /call/generate_villain_speech_for_room
+
+Γæº Submit Terminal
+  Γ£ô [200] /call/submit_terminal_for_room
+
+Γæ¿ Poll Artifacts (waiting up to 12s for background jobs)
+  [attempt 1/12]
+    Clue   : AAAAAC::round_1 ΓåÆ PendingGemini
+    Speech : AAAAAC::round_1 ΓåÆ PendingGemini
+  [attempt 2/12]
+    Clue   : AAAAAC::round_1 ΓåÆ PendingGemini
+    Speech : AAAAAC::round_1 ΓåÆ PendingGemini
+  [attempt 3/12]
+    Clue   : AAAAAC::round_1 ΓåÆ PendingGemini
+    Speech : AAAAAC::round_1 ΓåÆ PendingGemini
+  [attempt 4/12]
+    Clue   : AAAAAC::round_1 ΓåÆ PendingGemini
+    Speech : AAAAAC::round_1 ΓåÆ PendingGemini
+  [attempt 5/12]
+    Clue   : AAAAAC::round_1 ΓåÆ PendingGemini
+    Speech : AAAAAC::round_1 ΓåÆ PendingGemini
+  [attempt 6/12]
+    Clue   : AAAAAC::round_1 ΓåÆ PendingGemini
+    Speech : AAAAAC::round_1 ΓåÆ PendingGemini
+
+Γæ⌐ Read Game State
+  game_id=10002  villain=The Entity  terminal_status=[1,[]]
+
+Γæ¬ Terminate Room
+  Γ£ô [200] /call/terminate_room
+
+Γæ½ Verify Room Terminated
+  Γ£ô Room AAAAAC ΓåÆ Terminated
+
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+   Test Complete
+ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+
