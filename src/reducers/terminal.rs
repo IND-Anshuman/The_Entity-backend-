@@ -222,7 +222,7 @@ pub fn configure_local_dev_integrations(
             armoriq_api_key: api_key,
             local_llm_relay_base_url: Some(relay_base.clone()),
             gemini_api_base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
-            gemini_api_key: "AIzaSyBN-pBN4Vnb2v2NDBmmPAPurMHUOGJts90".to_string(),
+            gemini_api_key: "".to_string(),
             gemini_validator_model: "gemini-2.5-flash".to_string(),
             gemini_clue_generator_model: "gemini-2.5-flash".to_string(),
             gemini_villain_model: "gemini-2.5-flash".to_string(),
