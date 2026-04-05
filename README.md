@@ -7,7 +7,7 @@ Rust + SpacetimeDB backend for an asymmetric multiplayer horror puzzle game with
 - async ArmorIQ intent validation
 - Gemini-powered clue/manual generation
 - Gemini + ElevenLabs villain speech generation
-- a 3-minute room timer that starts when Player 2 joins
+- an 8-minute room timer that starts when Player 2 joins
 
 The backend is designed to run as a SpacetimeDB module compiled to WASM. A small optional local relay is included for local development and smoke testing.
 
@@ -49,7 +49,7 @@ POST /v1/database/the-entity-ty5fs/call/<reducer_name>
   - room-scoped villain speech generation
 - Match timer
   - starts automatically when Player 2 joins
-  - 180000 ms duration
+  - 480000 ms duration
   - stored in public state for Android countdown rendering
 
 ## Project Structure
@@ -169,7 +169,7 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-maincloud.ps1 -SkipChec
   - creates a room and room-scoped `game_state`
 - `join_room(room_id: String)`
   - adds Player 2
-  - starts the 3-minute timer
+  - starts the 8-minute timer
 - `terminate_room(room_id: String)`
   - host terminates room
 - `ping_room_ticket()`
@@ -261,7 +261,7 @@ Use for villain speech text and optional synthesized audio metadata.
 ## Timer Behavior
 
 - The match timer starts only when Player 2 joins.
-- Timer duration is `180000` milliseconds.
+- Timer duration is `480000` milliseconds.
 - The backend stores both:
   - start time
   - deadline time

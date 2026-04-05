@@ -16,8 +16,8 @@ pub const DEFAULT_GAME_ID: u64 = 1;
 /// Room-backed games start at a separate range so they never collide with the legacy default row.
 pub const ROOM_GAME_ID_OFFSET: u64 = 10_000;
 
-/// Three-minute match timer, expressed in milliseconds for Android-friendly countdown state.
-pub const GAME_TIME_LIMIT_MS: i64 = 180_000;
+/// Eight-minute match timer, expressed in milliseconds for Android-friendly countdown state.
+pub const GAME_TIME_LIMIT_MS: i64 = 480_000;
 
 /// The singleton configuration row holding secrets and remote endpoint settings.
 pub const ACTIVE_SERVER_CONFIG_KEY: u8 = 1;
